@@ -1,0 +1,66 @@
+/* Tailwind layers */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base layer tweaks */
+@layer base {
+  body {
+    @apply antialiased;
+  }
+}
+
+/* Reusable component classes */
+@layer components {
+  .btn-primary {
+    @apply bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors;
+  }
+
+  .card {
+    @apply bg-white rounded-xl shadow-lg p-6;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Custom scrollbar — use raw CSS values (avoid @apply here)
+   ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  /* Tailwind gray-100 => #f3f4f6 */
+  background-color: #f3f4f6;
+}
+
+::-webkit-scrollbar-thumb {
+  /* Tailwind purple-400 => #c084fc ; rounded-full => 9999px */
+  background-color: #c084fc;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  /* Tailwind purple-500 => #a855f7 */
+  background-color: #a855f7;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Loading dots animation
+   ──────────────────────────────────────────────────────────── */
+.loading-dots span {
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+.loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+/* Define the bounce keyframes used above */
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}

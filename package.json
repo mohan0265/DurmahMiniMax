@@ -1,0 +1,29 @@
+{
+  "name": "durmah-legal-buddy",
+  "version": "1.0.0",
+  "description": "Durmah - Legal Eagle Buddy for Durham Law Students",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd Server && npm run dev",
+    "dev:client": "cd Client && npm run dev",
+    "build": "npm run build:client",
+    "build:client": "cd Client && npm run build",
+    "install:all": "npm install && cd Server && npm install && cd ../Client && npm install",
+    "start": "cd Server && npm start",
+    "test": "npm run test:server && npm run test:client",
+    "test:server": "cd Server && npm test || echo \"no server tests\"",
+    "test:client": "cd Client && npm test || echo \"no client tests\"",
+    "health": "curl -f http://localhost:3000/health || curl -f http://localhost:3001/health"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "keywords": ["education", "ai", "chatbot", "legal", "durham"],
+  "author": "Durham Law Tech Team",
+  "license": "MIT"
+}

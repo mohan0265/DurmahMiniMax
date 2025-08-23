@@ -1,0 +1,45 @@
+# Render Blueprint for Durmah Voice-Mode Tutor
+# Deploy backend to Render with optimized configuration
+
+services:
+  - type: web
+    name: durmah-backend
+    env: node
+    region: oregon  # Choose region closest to users
+    plan: starter  # Upgrade to standard+ for production
+    buildCommand: cd Server && npm install
+    startCommand: cd Server && npm start
+    healthCheckPath: /api/healthz
+    
+    # Environment Variables (set these in Render Dashboard)
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: DEFAULT_VOICE
+        value: alloy
+      - key: DEFAULT_SAMPLE_RATE
+        value: 24000
+      - key: HEALTHCHECK_PATH
+        value: /api/healthz
+        
+    # Auto-deploy settings
+    autoDeploy: true
+    
+    # Resource limits
+    disk:
+      name: durmah-storage
+      size: 1GB
+      
+    # Scaling configuration
+    scaling:
+      minInstances: 1
+      maxInstances: 3  # Scale based on usage
+      
+# Database (if using Render Postgres instead of Supabase)
+# databases:
+#   - name: durmah-db
+#     databaseName: durmah
+#     plan: starter
+#     region: oregon

@@ -1,0 +1,48 @@
+{
+  "todos": {
+    "Coordinator": {
+      "1": {
+        "id": "1",
+        "content": "Analyze and extract existing codebase to workspace",
+        "details": "1. Extract all files from ZIP to workspace\n2. Analyze current architecture and identify issues\n3. Document current state and required improvements\n4. Set up project structure for refactoring",
+        "status": "completed",
+        "priority": "high"
+      },
+      "2": {
+        "id": "2",
+        "content": "Refactor backend for Render deployment optimization",
+        "details": "1. Configure for Render-specific requirements (PORT, health checks)\n2. Implement robust WebRTC session handling with ephemeral auth\n3. Optimize voice service with ElevenLabs TTS integration\n4. Add WebSocket fallback mechanisms\n5. Implement student-aware memory with Supabase\n6. Add academic integrity guardrails",
+        "status": "completed",
+        "priority": "high"
+      },
+      "3": {
+        "id": "3",
+        "content": "Refactor frontend as drop-in React widget",
+        "details": "1. Transform into reusable widget component\n2. Implement ultra-low-latency WebRTC voice controls\n3. Add one-click start/stop with status indicators\n4. Implement full-duplex interruption (barge-in)\n5. Create floating button → expandable panel UI\n6. Add accessibility features (ARIA, keyboard controls)\n7. Optimize for Netlify deployment",
+        "status": "completed",
+        "priority": "high"
+      },
+      "4": {
+        "id": "4",
+        "content": "Implement production-grade voice features",
+        "details": "1. Ultra-low-latency audio pipeline (<1200ms first response)\n2. Barge-in interruption (<300ms response time)\n3. Real-time transcription with partial/final streaming\n4. ElevenLabs TTS with SpeechSynthesis fallback\n5. Robust error handling and reconnection logic\n6. Safari and mobile browser compatibility",
+        "status": "completed",
+        "priority": "high"
+      },
+      "5": {
+        "id": "5",
+        "content": "Configure deployment and create documentation",
+        "details": "1. Set up Render backend deployment configuration\n2. Configure Netlify frontend deployment\n3. Create comprehensive README.md with deployment steps\n4. Generate env.example aligned with current setup\n5. Create troubleshooting guide for common issues\n6. Add optional /demo page for testing",
+        "status": "completed",
+        "priority": "medium"
+      },
+      "6": {
+        "id": "6",
+        "content": "Quality assurance and testing",
+        "details": "1. Test WebRTC session success on Render\n2. Verify audio response + barge-in functionality\n3. Confirm Supabase memory writes\n4. Test fallback mechanisms (WebSocket + TTS)\n5. Validate 10-minute continuous session stability\n6. Create QA test log with results\n7. Generate Changelog.md documenting all changes",
+        "status": "completed",
+        "priority": "medium"
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+# Node / Vite
+node_modules/
+dist/
+.vite/
+*.log
+
+# Local env (keep examples)
+.env
+.env.*
+!Client/.env.example
+!Server/.env.example
+Client/.env
+Server/.env
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Builds & releases in this repo
+Client/dist/
+Server/dist/
+Durmah_Voice_Widget_*.zip
+user_input_files/
