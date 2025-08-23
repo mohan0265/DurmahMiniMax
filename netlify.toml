@@ -1,100 +1,15 @@
-# Netlify Configuration for Durmah Voice Widget
-# Optimized for Vite React deployment
+# Netlify config for the Durmah client (Vite/React in /Client)
 
 [build]
-  # Build configuration
-  command = "cd Client && npm install && npm run build"
-  publish = "Client/dist"
-  
-  # Environment variables for build process
-  environment = { NODE_VERSION = "18" }
+  base = "Client"                 # build from the Client folder
+  publish = "dist"                # Vite output
+  command = "npm ci && npm run build"
 
-[build.processing]
-  skip_processing = false
+[build.environment]
+  NODE_VERSION = "22"
 
-[build.processing.css]
-  bundle = true
-  minify = true
-
-[build.processing.js]
-  bundle = true
-  minify = true
-
-[build.processing.html]
-  pretty_urls = true
-
-[build.processing.images]
-  compress = true
-
-# Headers for security and performance
-[[headers]]
-  for = "/*"
-  [headers.values]
-    # Security headers
-    X-Frame-Options = "DENY"
-    X-Content-Type-Options = "nosniff"
-    X-XSS-Protection = "1; mode=block"
-    Referrer-Policy = "strict-origin-when-cross-origin"
-    
-    # CORS headers for WebRTC
-    Access-Control-Allow-Origin = "*"
-    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
-    Access-Control-Allow-Headers = "Content-Type, Authorization"
-    
-    # Caching headers
-    Cache-Control = "public, max-age=31536000, immutable"
-
-# Specific headers for assets
-[[headers]]
-  for = "/assets/*"
-  [headers.values]
-    Cache-Control = "public, max-age=31536000, immutable"
-
-# Headers for HTML files
-[[headers]]
-  for = "/*.html"
-  [headers.values]
-    Cache-Control = "public, max-age=3600"
-
-# Redirects and rewrites
+# Single-page app redirect (so deep links resolve to index.html)
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
-  conditions = {Role = ["user"]}
-
-# Edge functions (if needed for additional processing)
-# [[edge_functions]]
-#   function = "voice-processor"
-#   path = "/api/voice/*"
-
-# Plugin configuration
-[[plugins]]
-  package = "@netlify/plugin-lighthouse"
-  
-  [plugins.inputs]
-    performance = 0.9
-    accessibility = 0.9
-    "best-practices" = 0.9
-    seo = 0.9
-
-# Development settings
-[dev]
-  command = "cd Client && npm run dev"
-  port = 5173
-  targetPort = 5173
-  autoLaunch = true
-
-# Environment context
-[context.production]
-  environment = { NODE_ENV = "production" }
-  
-[context.deploy-preview]
-  environment = { NODE_ENV = "staging" }
-  
-[context.branch-deploy]
-  environment = { NODE_ENV = "development" }
-
-# Forms handling (if needed for feedback)
-[forms]
-  settings = { spam_filter = true }
