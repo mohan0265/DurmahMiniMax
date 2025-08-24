@@ -1,140 +1,94 @@
 // Client/src/components/DurmahWidget.tsx
-// Minimal "ChatGPT-style" voice widget: ONE floating button.
-// Tap = start voice mode (mic on, TTS via WebRTC).
-// Tap again = stop. Optional tiny transcript toast while active.
-
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import React, { useState } from "react";
+import { motion } from "framer-motion";
 import { Mic, MicOff } from "lucide-react";
-import { useRealtimeVoice } from "../hooks/useRealtimeVoice";
+import { useRealtimeWebRTC } from "../hooks/useRealtimeWebRTC";
 
-type TranscriptItem = { id?: string; text?: string };
+// Define transcript line type
+type TranscriptLine = {
+  id: string;
+  text: string;
+};
 
-export default function DurmahWidget() {
+const DurmahWidget: React.FC = () => {
+  const [open, setOpen] = useState(true); // keep widget visible
   const {
+    status,
     isConnected,
     isListening,
     isSpeaking,
-    voiceModeActive,
-    status,
-    lastError,
     transcript,
     partialTranscript,
-    startVoiceMode,
-    stopVoiceMode,
     connect,
-    sendMessage, // still available if you ever need a programmatic prompt
-  } = useRealtimeVoice();
+    disconnect,
+  } = useRealtimeWebRTC();
 
-  // show a tiny bubble with last line while active (no full panel)
-  const [toastOpen, setToastOpen] = useState(false);
-  const toastTimerRef = useRef<number | null>(null);
-
-  // compute a short status ring
-  const ringClass = useMemo(() => {
-    if (voiceModeActive && (isListening || isSpeaking)) return "animate-ping";
-    return "";
-  }, [voiceModeActive, isListening, isSpeaking]);
-
-  const onToggle = useCallback(async () => {
-    try {
-      if (!voiceModeActive) {
-        if (!isConnected) await connect();
-        await startVoiceMode();
-        setToastOpen(true);
-      } else {
-        stopVoiceMode();
-        setToastOpen(false);
-      }
-    } catch (e) {
-      // keep silent; the button should remain simple
-      console.error(e);
+  const toggleVoice = async () => {
+    if (isConnected) {
+      disconnect();
+    } else {
+      const tokenResp = await fetch("/.netlify/functions/realtime-session");
+      const { client_secret, model } = await tokenResp.json();
+      await connect({ token: client_secret.value, model });
     }
-  }, [voiceModeActive, isConnected, connect, startVoiceMode, stopVoiceMode]);
-
-  // Ctrl/Cmd + V also toggles voice
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
-        e.preventDefault();
-        onToggle();
-      }
-    };
-    window.addEventListener("keydown", k);
-    return () => window.removeEventListener("keydown", k);
-  }, [onToggle]);
-
-  // Auto-hide the toast a few seconds after updates (keeps UI clean)
-  const lastLine: string = useMemo(() => {
-    const arr = (transcript as unknown as TranscriptItem[]) || [];
-    const finalText = arr.length ? String(arr[arr.length - 1]?.text ?? "") : "";
-    return partialTranscript || finalText;
-  }, [transcript, partialTranscript]);
-
-  useEffect(() => {
-    if (!toastOpen) return;
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToastOpen(false), 3500);
-    return () => {
-      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
-    };
-  }, [lastLine, toastOpen]);
-
-  // a concise accessible label
-  const label = voiceModeActive
-    ? "Stop voice (tap to end)"
-    : status === "connecting"
-    ? "Connecting…"
-    : "Start voice (tap to speak)";
+  };
 
   return (
     <>
-      {/* ONE floating button */}
-      <button
-        onClick={onToggle}
-        aria-label={label}
-        title={label}
-        className={`
-          fixed right-5 bottom-5 z-[1000]
-          h-16 w-16 rounded-full
-          flex items-center justify-center
-          shadow-xl border
-          transition-transform active:scale-95
-          ${voiceModeActive ? "bg-red-600 border-red-700 text-white" : "bg-indigo-600 border-indigo-700 text-white"}
-        `}
+      {/* Floating Button */}
+      <motion.button
+        onClick={toggleVoice}
+        className={`fixed bottom-6 right-6 flex items-center justify-center w-16 h-16 rounded-full shadow-lg focus:outline-none ${
+          isConnected ? "bg-red-500" : "bg-purple-600"
+        }`}
+        animate={{ scale: isSpeaking ? 1.1 : 1 }}
+        transition={{
+          duration: 0.3,
+          repeat: isSpeaking ? Infinity : 0,
+          repeatType: "reverse",
+        }}
       >
-        {/* soft animated ring when actively listening/speaking */}
-        <span
-          className={`
-            absolute inline-block rounded-full
-            h-20 w-20 ${ringClass}
-            ${voiceModeActive ? "bg-white/20" : "bg-white/10"}
-          `}
-          style={{ pointerEvents: "none" }}
-        />
-        {voiceModeActive ? <MicOff className="w-7 h-7" /> : <Mic className="w-7 h-7" />}
-      </button>
-
-      {/* Tiny transcript toast while active (auto-hides) */}
-      <AnimatePresence>
-        {voiceModeActive && toastOpen && !!lastLine && (
-          <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.98 }}
-            className="fixed right-5 bottom-24 z-[999] max-w-[70vw] sm:max-w-sm
-                       bg-white/95 backdrop-blur border border-gray-200 shadow-xl
-                       rounded-2xl px-3 py-2 text-sm text-gray-800"
-          >
-            {lastError ? (
-              <span className="text-red-700">{lastError}</span>
-            ) : (
-              <span className="line-clamp-3">{lastLine}</span>
-            )}
-          </motion.div>
+        {isConnected ? (
+          <MicOff className="text-white w-8 h-8" />
+        ) : (
+          <Mic className="text-white w-8 h-8" />
         )}
-      </AnimatePresence>
+      </motion.button>
+
+      {/* Transcript Box */}
+      {open && (
+        <div className="fixed bottom-28 right-6 w-80 max-h-96 bg-white shadow-xl rounded-lg border border-gray-200 flex flex-col">
+          <div className="px-4 py-2 bg-purple-600 text-white rounded-t-lg text-sm font-semibold">
+            Conversation Transcript
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 text-sm space-y-2">
+            {(transcript as TranscriptLine[]).map((line, idx) => (
+              <div
+                key={line.id || idx}
+                className="p-2 rounded-md bg-gray-100 text-gray-800"
+              >
+                {line.text}
+              </div>
+            ))}
+            {partialTranscript && (
+              <div className="p-2 rounded-md bg-yellow-100 text-gray-700 italic">
+                {partialTranscript}
+              </div>
+            )}
+            {transcript.length === 0 && !partialTranscript && (
+              <div className="text-gray-400 italic text-center">
+                No conversation yet...
+              </div>
+            )}
+          </div>
+          <div className="px-3 py-2 border-t text-xs text-gray-500">
+            Status: {status} {isListening ? "🎤 Listening" : ""}{" "}
+            {isSpeaking ? "🗣️ Speaking" : ""}
+          </div>
+        </div>
+      )}
     </>
   );
-}
+};
+
+export default DurmahWidget;

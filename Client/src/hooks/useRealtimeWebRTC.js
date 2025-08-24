@@ -52,7 +52,6 @@ export function useRealtimeWebRTC() {
       el.playsInline = true;
       el.muted = false;
       audioElRef.current = el;
-      document.body.appendChild(el);
     }
     return audioElRef.current;
   };
@@ -135,22 +134,21 @@ export function useRealtimeWebRTC() {
     try { msg = JSON.parse(evt.data); } catch { return; }
     if (DEBUG) log("recv:", msg);
 
-    // Errors / rate limit notices — just surface, do not retry
+    // Errors
     if (msg.type === "error") {
       setLastError(msg.error?.message || "Server error");
       return;
     }
 
-    // ASR partial/completed (for UI transcript only)
+    // ASR transcripts
     if (msg.type === "transcript.partial" && typeof msg.text === "string") {
       setPartialTranscript(msg.text);
     } else if (msg.type === "transcript.completed" && typeof msg.text === "string") {
       setPartialTranscript("");
       setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: msg.text }]);
-      // DO NOT send response.create here (server VAD will create the reply)
     }
 
-    // Output text (speak on completion in ElevenLabs mode)
+    // Assistant reply
     if (msg.type === "response.output_text.delta" && typeof msg.delta === "string") {
       setPartialTranscript((p) => p + msg.delta);
     } else if (msg.type === "response.completed") {
@@ -181,9 +179,9 @@ export function useRealtimeWebRTC() {
         if (pc.connectionState === "connected") setIsConnected(true);
       };
 
-      // Remote audio (OpenAI fallback)
+      // Remote audio (OpenAI fallback only)
       pc.ontrack = (e) => {
-        if (USE_ELEVEN) return; // ElevenLabs handles TTS
+        if (USE_ELEVEN) return;
         const [stream] = e.streams;
         const el = ensureAudioElement();
         el.srcObject = stream;
@@ -191,15 +189,12 @@ export function useRealtimeWebRTC() {
         startRemotePulse(stream);
       };
 
-      // One bidirectional data channel
+      // Data channel
       dcRef.current = pc.createDataChannel("oai-events");
-      dcRef.current.onopen = () => {
-        DEBUG && log("data channel open");
-        // IMPORTANT: do NOT send response.create here
-      };
+      dcRef.current.onopen = () => DEBUG && log("data channel open");
       dcRef.current.onmessage = handleServerEvent;
 
-      // Audio send/recv
+      // Audio transceiver
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
       // Mic
@@ -214,7 +209,7 @@ export function useRealtimeWebRTC() {
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       setIsListening(true);
 
-      // Local barge-in: cancel current reply when you start talking
+      // Barge-in cancel
       try {
         const ACtx = window.AudioContext || window.webkitAudioContext;
         if (ACtx) {
@@ -234,7 +229,6 @@ export function useRealtimeWebRTC() {
             }
             const nowSpeaking = maxDev > 10;
             if (!speaking && nowSpeaking && dcRef.current && dcRef.current.readyState === "open") {
-              // cancel current assistant reply (if any)
               try { dcRef.current.send(JSON.stringify({ type: "response.cancel" })); } catch {}
               if (localTTSRef.current) { try { localTTSRef.current.pause(); } catch {}; localTTSRef.current = null; setIsSpeaking(false); }
             }
@@ -245,7 +239,7 @@ export function useRealtimeWebRTC() {
         }
       } catch {}
 
-      // SDP handshaking
+      // Offer/Answer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(modelRef.current)}`;
@@ -258,10 +252,7 @@ export function useRealtimeWebRTC() {
         },
         body: offer.sdp,
       });
-      if (!resp.ok) {
-        const txt = await resp.text();
-        throw new Error(`Realtime SDP exchange failed: ${txt}`);
-      }
+      if (!resp.ok) throw new Error(await resp.text());
       const answer = await resp.text();
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
 
@@ -298,7 +289,7 @@ export function useRealtimeWebRTC() {
     }
   }, []);
 
-  // ---------- manual text (only place we send response.create) ----------
+  // ---------- manual text ----------
   const sendText = useCallback((text) => {
     if (!dcRef.current || dcRef.current.readyState !== "open") return;
     try {
