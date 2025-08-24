@@ -14,7 +14,7 @@ export const useVoiceMode = () => {
 };
 
 export const VoiceModeProvider = ({ children }) => {
-  const { hasVoiceAccess, isAuthenticated } = useAuth();
+  const { user, supabase, hasVoiceAccess, isAuthenticated } = useAuth();
   
   // Core mode state
   const [mode, setMode] = useState('text'); // 'voice' | 'text'
@@ -237,6 +237,41 @@ export const VoiceModeProvider = ({ children }) => {
     setConversationId(`conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
   }, []);
 
+  // Save conversation to Supabase
+  const saveConversation = useCallback(async (title) => {
+    if (!isAuthenticated || !user) {
+      toast.error('You must be logged in to save conversations.');
+      return;
+    }
+
+    if (conversationHistory.length === 0) {
+      toast.error('There is nothing to save.');
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('voice_transcripts')
+        .insert([{
+          user_id: user.id,
+          conversation_id: conversationId,
+          title: title || `Conversation from ${new Date().toLocaleDateString()}`,
+          transcript: conversationHistory,
+          duration: conversationHistory.length > 0 ? (new Date(conversationHistory[conversationHistory.length - 1].timestamp) - new Date(conversationHistory[0].timestamp)) / 1000 : 0,
+          summary: conversationHistory.map(m => m.content).join(' ').substring(0, 200) + '...'
+        }]);
+
+      if (error) throw error;
+
+      toast.success('Conversation saved!');
+      clearConversation();
+    } catch (error) {
+      console.error('Error saving conversation:', error);
+      toast.error('Failed to save conversation.');
+    }
+  }, [isAuthenticated, user, supabase, conversationHistory, conversationId, clearConversation]);
+
+
   // Get conversation context for AI
   const getConversationContext = useCallback(() => {
     return {
@@ -303,6 +338,7 @@ export const VoiceModeProvider = ({ children }) => {
     conversationId,
     addMessage,
     clearConversation,
+    saveConversation,
     getConversationContext,
     
     // Mode switching

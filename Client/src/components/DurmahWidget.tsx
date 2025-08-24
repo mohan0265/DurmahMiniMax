@@ -14,6 +14,8 @@ import {
   Minimize2,
   Maximize2,
   Send,
+  Save,
+  Trash2,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useVoiceMode } from '../contexts/VoiceModeContext';
@@ -42,9 +44,11 @@ const StatusIndicator: React.FC<{
   status: string;
   message: string;
   isConnected: boolean;
+  isConnecting: boolean;
   onClick?: () => void;
-}> = ({ status, message, isConnected, onClick }) => {
+}> = ({ status, message, isConnected, isConnecting, onClick }) => {
   const getStatusColor = () => {
+    if (isConnecting) return 'text-yellow-500';
     if (!isConnected) return 'text-gray-400';
     switch (status) {
       case 'listening':
@@ -61,6 +65,7 @@ const StatusIndicator: React.FC<{
   };
 
   const getStatusIcon = () => {
+    if (isConnecting) return <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />;
     if (!isConnected) return <WifiOff className="w-4 h-4" />;
     switch (status) {
       case 'listening':
@@ -78,18 +83,12 @@ const StatusIndicator: React.FC<{
     }
   };
 
-  const isClickable = !isConnected && onClick;
-
   return (
     <div
       className={clsx(
         'flex items-center gap-2 text-sm transition-colors',
         getStatusColor(),
-        isClickable && 'cursor-pointer select-none hover:opacity-80'
       )}
-      onClick={isClickable ? onClick : undefined}
-      role={isClickable ? 'button' : undefined}
-      aria-label={isClickable ? 'Click to connect' : undefined}
     >
       {getStatusIcon()}
       <span className="font-medium truncate">{message}</span>
@@ -370,7 +369,9 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
   const [isMinimized, setIsMinimized] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [banner, setBanner] = useState<string | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
 
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [hasGreeted, setHasGreeted] = useState(false);
 
@@ -414,39 +415,36 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
 
   // Derived status functions
   const getStatus = () => {
+    if (isConnecting) return 'connecting';
     if (!isConnected) return 'disconnected';
     if (isListening) return 'listening';
     if (isSpeaking) return 'speaking';
     if (isThinking) return 'thinking';
     return 'ready';
   };
-  const getStatusMessage = () =>
-    isConnected ? (isListening ? 'Listening…' : 'Connected') : 'Click to connect';
-
-  // Auto-start if configured
-  useEffect(() => {
-    if (autoStart && !isConnected) {
-      handleConnect();
-    }
-    // eslint-disable-next-line
-  }, [autoStart, isConnected]);
+  const getStatusMessage = () => {
+    if (isConnecting) return 'Connecting...';
+    return isConnected ? (isListening ? 'Listening…' : 'Connected') : 'Ready to connect';
+  }
 
   // ========= Handlers =========
   const handleConnect = async () => {
+    if (isConnected || isConnecting) return;
+
     try {
-      setBanner(null);
+      setIsConnecting(true);
+      setBanner('Connecting to Durmah...');
       console.log('[Durmah] connect:start');
       if (directRef.current) {
         directRef.current.stop();
         directRef.current = null;
       }
       const handle = await directRealtimeConnect(
-        RAW_ENDPOINT,                         // <— use the raw env value; helper will fallback
+        RAW_ENDPOINT,
         (...a: any[]) => console.log(...a),
-        { autoGreet: false }  // We'll handle greeting ourselves
+        { autoGreet: false }
       );
       
-      // Set up event handlers for voice feedback
       handle.onAudioStart(() => {
         voiceMode.setIsSpeaking(true);
         voiceMode.setIsThinking(false);
@@ -471,7 +469,6 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
       setBanner('🎤 Microphone is live! You can start speaking now.');
       setShowWelcome(false);
       
-      // Send personalized greeting
       if (!hasGreeted && canUseVoice) {
         setTimeout(() => {
           const greeting = getPersonalizedVoiceGreeting();
@@ -482,23 +479,24 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
             content: greeting, 
             type: 'greeting' 
           });
-        }, 1000);
+        }, 500);
       }
     } catch (e: any) {
       const msg = e?.message || String(e);
       setBanner('Could not connect: ' + msg);
       setIsConnected(false);
       console.error('[Durmah] connect failed', e);
+    } finally {
+      setIsConnecting(false);
     }
   };
 
   const handleMic = async () => {
     try {
       if (!isConnected) {
-        await handleConnect();
+        return;
       }
       
-      // Use intelligent mode switching
       const result = await mode.toggle();
       if (!result.success) {
         if (result.reason === 'no_voice_access') {
@@ -522,9 +520,31 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
     if (!isOpen) {
       setIsOpen(true);
       setIsMinimized(false);
+      setShowTranscript(false);
+      handleConnect();
     } else {
+      setShowTranscript(true);
+      if (directRef.current) {
+        directRef.current.stop();
+        directRef.current = null;
+      }
+      setIsConnected(false);
+      setIsConnecting(false);
+      setHasGreeted(false);
+    }
+  };
+
+  const handleSave = () => {
+    const title = prompt('Enter a title for this conversation:', `Conversation from ${new Date().toLocaleDateString()}`);
+    if (title) {
+      voiceMode.saveConversation(title);
       setIsOpen(false);
     }
+  };
+
+  const handleDiscard = () => {
+    voiceMode.clearConversation();
+    setIsOpen(false);
   };
 
   const getPositionClasses = () => {
@@ -540,41 +560,23 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
     }
   };
 
-  const getGreeting = () => {
+  const getPersonalizedVoiceGreeting = () => {
     const hour = new Date().getHours();
     const name = userDisplayName === 'there' ? '' : `, ${userDisplayName}`;
     
-    if (hour < 6) return `Still studying${name}? Remember to rest! 🌙`;
-    if (hour < 12) return `Good morning${name}! Ready to excel today? ☀️`;
-    if (hour < 17) return `Good afternoon${name}! How can I help with your studies? 🌤️`;
-    if (hour < 22) return `Good evening${name}! Let's review today's learning! 🌆`;
-    return `It's late${name}! Quick study session before bed? 🌙`;
-  };
-
-  const getPersonalizedVoiceGreeting = () => {
-    const hour = new Date().getHours();
-    const name = userDisplayName === 'there' ? 'there' : userDisplayName;
-    
-    if (hour < 12) {
-      return `Good morning, ${name}! I'm Durmah, your Legal Eagle Buddy. My microphone is now live and I'm ready to help with your legal studies. How are you feeling today?`;
-    } else if (hour < 17) {
-      return `Good afternoon, ${name}! I'm listening and ready to assist you with your legal studies. What would you like to work on today?`;
-    } else if (hour < 22) {
-      return `Good evening, ${name}! I'm here and my mic is active. How can I help you with your studies this evening?`;
-    } else {
-      return `Hi ${name}! Even though it's late, I'm here to help. My microphone is ready - what legal topic can I assist you with?`;
-    }
+    if (hour >= 6 && hour < 12) return `Good morning${name}.`;
+    if (hour >= 12 && hour < 17) return `Good afternoon${name}.`;
+    if (hour >= 17 && hour < 22) return `Good evening${name}.`;
+    return `Hi ${name}, burning the midnight oil?`;
   };
 
   const sendTyped = (text: string) => {
-    // Add user message with proper mode context
     voiceMode.addMessage({ 
       role: 'user', 
       content: text, 
       type: 'text' 
     });
     
-    // Send with conversation context
     const context = voiceMode.getConversationContext();
     directRef.current?.sendText?.(text, context);
   };
@@ -602,12 +604,12 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
             onClick={handleToggleWidget}
             className={clsx(
               'w-16 h-16 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-purple-300 relative overflow-hidden',
-              isConnected ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white' : 'bg-gradient-to-r from-gray-400 to-gray-500 text-white'
+              'bg-gradient-to-r from-purple-600 to-indigo-600 text-white'
             )}
-            style={{ backgroundColor: isConnected ? primaryColor : undefined }}
-            title={isConnected ? 'Durmah is ready' : 'Click to start Durmah'}
+            style={{ backgroundColor: primaryColor }}
+            title={'Click to start Durmah'}
           >
-            {isConnected && isListening && (
+            {(isConnecting) && (
               <motion.div
                 className="absolute inset-0 rounded-full border-2 border-white"
                 animate={{ scale: [1, 1.2, 1], opacity: [0.7, 0.3, 0.7] }}
@@ -661,7 +663,7 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
                 {/* Status with Voice Mode Indicator */}
                 <div className="px-4 py-2 bg-gray-50 border-b">
                   <div className="flex items-center justify-between">
-                    <StatusIndicator status={getStatus()} message={getStatusMessage()} isConnected={isConnected} onClick={handleConnect} />
+                    <StatusIndicator status={getStatus()} message={getStatusMessage()} isConnected={isConnected} isConnecting={isConnecting} />
                     {canUseVoice && (
                       <VoiceIndicator 
                         variant="compact" 
@@ -675,23 +677,15 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
 
                 {/* Messages */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-[20rem]">
-                  {showWelcome && conversationHistory.length === 0 && (
+                  {showWelcome && conversationHistory.length === 0 && !showTranscript && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-center py-8">
                       <div className="text-4xl mb-2">🦅</div>
                       <h3 className="font-semibold text-gray-800 mb-1">Hello! I'm Durmah</h3>
-                      <p className="text-sm text-gray-600 mb-4">{getGreeting()}</p>
-                      <p className="text-xs text-gray-500">
-                        {canUseVoice ? 'Click the microphone to speak, or type below to chat!' : 'Sign in to unlock voice mode, or browse as guest!'}
-                      </p>
-                      {!user && ALLOW_ANON && (
-                        <div className="mt-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
-                          <p className="text-xs text-blue-800">🌟 Anonymous mode enabled - voice features available without login!</p>
-                        </div>
-                      )}
+                      <p className="text-sm text-gray-600 mb-4">I'm connecting...</p>
                     </motion.div>
                   )}
 
-                  {conversationHistory.map((m, i) => (
+                  {(showTranscript || isConnected) && conversationHistory.map((m, i) => (
                     <MessageBubble key={m.id} message={m} isLatest={i === conversationHistory.length - 1} />
                   ))}
 
@@ -712,7 +706,18 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
 
                 {/* Controls */}
                 <div className="border-t">
-                  {canUseVoice ? (
+                  {showTranscript ? (
+                    <div className="p-3 bg-gray-50 flex justify-around">
+                      <button onClick={handleSave} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white transition-colors">
+                        <Save className="w-4 h-4" />
+                        Save
+                      </button>
+                      <button onClick={handleDiscard} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors">
+                        <Trash2 className="w-4 h-4" />
+                        Discard
+                      </button>
+                    </div>
+                  ) : canUseVoice ? (
                     <>
                       <div className="flex items-center justify-between p-3 bg-gray-50">
                         <VoiceControls
@@ -758,7 +763,7 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
                     <div className="mx-3 my-2 rounded-md bg-yellow-50 border border-yellow-200 px-3 py-2 text-xs text-yellow-900">{banner}</div>
                   )}
 
-                  {allowTextFallback && canUseVoice && (
+                  {allowTextFallback && canUseVoice && !showTranscript && (
                     <TextInput onSendMessage={sendTyped} disabled={!isConnected} />
                   )}
                 </div>

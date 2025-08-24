@@ -10,18 +10,8 @@ import toast from 'react-hot-toast'
 
 function AppContent() {
   const [showSettings, setShowSettings] = useState(false)
-  const [showAuthModal, setShowAuthModal] = useState(false)
   const { user, loading, signOut, displayName, isAuthenticated, hasVoiceAccess } = useAuth()
 
-  // Google auto-redirect fallback for unauthenticated users
-  useEffect(() => {
-    if (!loading && !user) {
-      // Optional: Auto-redirect to Google OAuth
-      // Uncomment the line below to enable automatic Google login
-      // supabase.auth.signInWithOAuth({ provider: 'google' });
-    }
-  }, [user, loading])
-  
   const handleSignOut = async () => {
     try {
       await signOut()
@@ -42,6 +32,10 @@ function AppContent() {
     )
   }
 
+  if (!isAuthenticated) {
+    return <AuthModal isOpen={true} onClose={() => {}} />;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-600 via-blue-600 to-indigo-800">
       {/* Header */}
@@ -57,36 +51,26 @@ function AppContent() {
             </div>
             
             <div className="flex items-center space-x-4">
-              {isAuthenticated ? (
-                <div className="flex items-center space-x-3">
-                  <div className="text-right">
-                    <p className="text-sm font-medium text-white">{displayName}</p>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-purple-200">
-                        {hasVoiceAccess ? '🎤 Voice Enabled' : '👤 Text Only'}
-                      </span>
-                      {hasVoiceAccess && (
-                        <VoiceIndicator variant="badge" showLabel={false} showModeToggle={false} />
-                      )}
-                    </div>
+              <div className="flex items-center space-x-3">
+                <div className="text-right">
+                  <p className="text-sm font-medium text-white">{displayName}</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-purple-200">
+                      {hasVoiceAccess ? '🎤 Voice Enabled' : '👤 Text Only'}
+                    </span>
+                    {hasVoiceAccess && (
+                      <VoiceIndicator variant="badge" showLabel={false} showModeToggle={false} />
+                    )}
                   </div>
-                  <button
-                    onClick={handleSignOut}
-                    className="flex items-center space-x-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    <span className="text-sm">Sign Out</span>
-                  </button>
                 </div>
-              ) : (
                 <button
-                  onClick={() => setShowAuthModal(true)}
+                  onClick={handleSignOut}
                   className="flex items-center space-x-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
                 >
-                  <LogIn className="w-4 h-4" />
-                  <span className="text-sm">Sign In</span>
+                  <LogOut className="w-4 h-4" />
+                  <span className="text-sm">Sign Out</span>
                 </button>
-              )}
+              </div>
               
               <button
                 onClick={() => setShowSettings(!showSettings)}
@@ -106,14 +90,13 @@ function AppContent() {
               <Mic className="w-8 h-8 text-white" />
             </div>
             <h2 className="text-3xl font-bold text-white mb-2">
-              {isAuthenticated ? `Welcome back, ${displayName}!` : 'Meet Your Legal Eagle Buddy'}
+              {`Welcome back, ${displayName}!`}
             </h2>
             <p className="text-purple-200 max-w-2xl mx-auto">
-              {isAuthenticated 
-                ? hasVoiceAccess 
+              {
+                hasVoiceAccess 
                   ? 'Ready for voice conversations? Click the Durmah widget below to start chatting!'
                   : 'You can use text chat. Voice features require a Durham University email.'
-                : 'Sign in to unlock personalized AI assistance for your legal studies.'
               }
             </p>
           </div>
@@ -223,20 +206,16 @@ function AppContent() {
         </main>
 
         {/* Durmah Widget */}
-        <DurmahWidget
-          apiBase="/api"
-          position="bottom-right"
-          showBranding={true}
-          allowTextFallback={true}
-          autoStart={false}
-          debugMode={import.meta.env.NODE_ENV === 'development'}
-        />
-
-        {/* Auth Modal */}
-        <AuthModal 
-          isOpen={showAuthModal} 
-          onClose={() => setShowAuthModal(false)} 
-        />
+        {isAuthenticated && hasVoiceAccess && (
+          <DurmahWidget
+            apiBase="/api"
+            position="bottom-right"
+            showBranding={true}
+            allowTextFallback={true}
+            autoStart={false}
+            debugMode={import.meta.env.NODE_ENV === 'development'}
+          />
+        )}
       </div>
     )
 }
