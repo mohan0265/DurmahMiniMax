@@ -1,6 +1,6 @@
 // Client/src/hooks/useRealtimeWebRTC.js
 // WebRTC to OpenAI Realtime (mic + reasoning).
-// TTS: ElevenLabs when VITE_TTS_PROVIDER=elevenlabs, otherwise OpenAI remote audio.
+// TTS: ElevenLabs when VITE_TTS_PROVIDER=elevenlabs, else OpenAI remote audio.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -15,27 +15,34 @@ export function useRealtimeWebRTC() {
   const pcRef = useRef(null);
   const micStreamRef = useRef(null);
 
-  const audioElRef = useRef(null);     // OpenAI remote audio (fallback)
-  const localTTSRef = useRef(null);    // ElevenLabs local player
+  // OpenAI remote audio (fallback path)
+  const audioElRef = useRef(null);
 
-  const sendDCRef = useRef(null);
-  const recvDCRef = useRef(null);
+  // ElevenLabs local player (speak once per turn)
+  const localTTSRef = useRef(null);
+
+  // Single bidirectional channel to OpenAI (send + receive events)
+  const dcRef = useRef(null);
+
   const tokenRef = useRef(null);
   const modelRef = useRef(null);
 
+  // Remote speaking pulse (only when using OpenAI audio)
   const audioCtxRef = useRef(null);
   const vadRemoteRef = useRef({ alive: false, raf: 0 });
 
+  // UI state
   const [status, setStatus] = useState("idle");
   const [isConnected, setIsConnected] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [lastError, setLastError] = useState(null);
-  const [transcript, setTranscript] = useState([]);      // [{ id, text }]
+  const [transcript, setTranscript] = useState([]); // [{ id, text }]
   const [partialTranscript, setPartialTranscript] = useState("");
 
   const log = (...a) => { if (DEBUG) console.log("[RealtimeWebRTC]", ...a); };
 
+  // ---------- helpers ----------
   const ensureAudioElement = () => {
     if (!audioElRef.current) {
       const el = new Audio();
@@ -48,7 +55,41 @@ export function useRealtimeWebRTC() {
     return audioElRef.current;
   };
 
-  // ---- ElevenLabs playback (speak once per turn) ----
+  const startRemotePulse = (remoteStream) => {
+    if (USE_ELEVEN) return; // not used when ElevenLabs does TTS
+    try {
+      const ACtx = window.AudioContext || window.webkitAudioContext;
+      if (!ACtx || !remoteStream) return;
+      if (!audioCtxRef.current) audioCtxRef.current = new ACtx();
+      const ctx = audioCtxRef.current;
+      const src = ctx.createMediaStreamSource(remoteStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      src.connect(analyser);
+      vadRemoteRef.current.alive = true;
+      const tick = () => {
+        if (!vadRemoteRef.current.alive) return;
+        analyser.getByteTimeDomainData(data);
+        let md = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = Math.abs(data[i] - 128);
+          if (v > md) md = v;
+        }
+        setIsSpeaking(md > 10);
+        if (vadRemoteRef.current.alive) vadRemoteRef.current.raf = requestAnimationFrame(tick);
+      };
+      vadRemoteRef.current.raf = requestAnimationFrame(tick);
+    } catch {}
+  };
+
+  const stopRemotePulse = () => {
+    vadRemoteRef.current.alive = false;
+    if (vadRemoteRef.current.raf) cancelAnimationFrame(vadRemoteRef.current.raf);
+    vadRemoteRef.current.raf = 0;
+    setIsSpeaking(false);
+  };
+
   const playEleven = async (text) => {
     try {
       if (!text || !text.trim()) return;
@@ -86,54 +127,16 @@ export function useRealtimeWebRTC() {
     }
   };
 
-  // ---- Remote speaking pulse (OpenAI audio only) ----
-  const startRemotePulse = (remoteStream) => {
-    if (USE_ELEVEN) return;
-    try {
-      const ACtx = window.AudioContext || window.webkitAudioContext;
-      if (!ACtx || !remoteStream) return;
-      if (!audioCtxRef.current) audioCtxRef.current = new ACtx();
-      const ctx = audioCtxRef.current;
-      const src = ctx.createMediaStreamSource(remoteStream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      src.connect(analyser);
-      vadRemoteRef.current.alive = true;
-      const tick = () => {
-        if (!vadRemoteRef.current.alive) return;
-        analyser.getByteTimeDomainData(data);
-        let md = 0;
-        for (let i = 0; i < data.length; i++) {
-          const v = Math.abs(data[i] - 128);
-          if (v > md) md = v;
-        }
-        setIsSpeaking(md > 10);
-        if (vadRemoteRef.current.alive) vadRemoteRef.current.raf = requestAnimationFrame(tick);
-      };
-      vadRemoteRef.current.raf = requestAnimationFrame(tick);
-    } catch {}
-  };
-
-  const stopRemotePulse = () => {
-    try {
-      vadRemoteRef.current.alive = false;
-      if (vadRemoteRef.current.raf) cancelAnimationFrame(vadRemoteRef.current.raf);
-      vadRemoteRef.current.raf = 0;
-      setIsSpeaking(false);
-    } catch {}
-  };
-
-  // ---- Make sure we request a reply on each user turn ----
+  // Ask the model to speak a reply
   const requestResponse = () => {
-    if (!sendDCRef.current || sendDCRef.current.readyState !== "open") return;
+    if (!dcRef.current || dcRef.current.readyState !== "open") return;
     try {
-      sendDCRef.current.send(JSON.stringify({ type: "response.create" }));
+      dcRef.current.send(JSON.stringify({ type: "response.create" }));
       DEBUG && log("sent: response.create");
     } catch {}
   };
 
-  // ---- Handle server events (ASR + response text) ----
+  // ---------- server messages ----------
   const handleServerEvent = (evt) => {
     try {
       const msg = JSON.parse(evt.data);
@@ -145,11 +148,11 @@ export function useRealtimeWebRTC() {
       } else if (msg.type === "transcript.completed" && typeof msg.text === "string") {
         setPartialTranscript("");
         setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: msg.text }]);
-        // <- Ensure the assistant actually replies after your utterance
+        // ensure the assistant replies to your completed utterance
         requestResponse();
       }
 
-      // Some runtimes send explicit turn markers; reply when user finishes
+      // Some runtimes emit explicit user-turn end
       if (msg.type === "input_audio_buffer.speech_stopped") {
         requestResponse();
       }
@@ -168,11 +171,11 @@ export function useRealtimeWebRTC() {
         }
       }
     } catch {
-      // ignore
+      // ignore non-JSON
     }
   };
 
-  // ---- Connect ----
+  // ---------- connect ----------
   const connect = useCallback(async ({ token, model }) => {
     if (isConnected || status === "connecting") return;
     setStatus("connecting");
@@ -189,8 +192,9 @@ export function useRealtimeWebRTC() {
         if (pc.connectionState === "connected") setIsConnected(true);
       };
 
+      // Remote audio (OpenAI fallback)
       pc.ontrack = (e) => {
-        if (USE_ELEVEN) return; // ignore; ElevenLabs will handle TTS
+        if (USE_ELEVEN) return; // ignore, we use ElevenLabs TTS
         const [stream] = e.streams;
         const el = ensureAudioElement();
         el.srcObject = stream;
@@ -198,20 +202,19 @@ export function useRealtimeWebRTC() {
         startRemotePulse(stream);
       };
 
-      pc.ondatachannel = (e) => {
-        recvDCRef.current = e.channel;
-        recvDCRef.current.onmessage = handleServerEvent;
-        DEBUG && log("recv channel open");
+      // Create one bidirectional data channel and use it for send+receive
+      dcRef.current = pc.createDataChannel("oai-events");
+      dcRef.current.onopen = () => {
+        DEBUG && log("data channel open");
+        // kick off first reply so the model starts speaking/listening
+        requestResponse();
       };
+      dcRef.current.onmessage = handleServerEvent;
 
-      // Create the send data channel BEFORE the offer so it’s negotiated
-      sendDCRef.current = pc.createDataChannel("oai-events");
-      sendDCRef.current.onopen = () => DEBUG && log("send channel open");
-
-      // Enable send/recv audio
+      // Enable audio send/recv
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
-      // Mic
+      // Microphone
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -223,7 +226,7 @@ export function useRealtimeWebRTC() {
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       setIsListening(true);
 
-      // Local VAD for barge-in: cancel current TTS if you start speaking
+      // Local barge-in: cancel current reply when you start talking
       try {
         const ACtx = window.AudioContext || window.webkitAudioContext;
         if (ACtx) {
@@ -242,8 +245,8 @@ export function useRealtimeWebRTC() {
               if (v > maxDev) maxDev = v;
             }
             const nowSpeaking = maxDev > 10;
-            if (!speaking && nowSpeaking && sendDCRef.current && sendDCRef.current.readyState === "open") {
-              try { sendDCRef.current.send(JSON.stringify({ type: "response.cancel" })); } catch {}
+            if (!speaking && nowSpeaking && dcRef.current && dcRef.current.readyState === "open") {
+              try { dcRef.current.send(JSON.stringify({ type: "response.cancel" })); } catch {}
               if (localTTSRef.current) { try { localTTSRef.current.pause(); } catch {}; localTTSRef.current = null; setIsSpeaking(false); }
             }
             speaking = nowSpeaking;
@@ -289,12 +292,11 @@ export function useRealtimeWebRTC() {
     }
   }, [isConnected, status]);
 
-  // ---- Disconnect ----
+  // ---------- disconnect ----------
   const disconnect = useCallback(() => {
     setStatus("disconnecting");
     try {
-      if (sendDCRef.current) { try { sendDCRef.current.close(); } catch {} sendDCRef.current = null; }
-      if (recvDCRef.current) { try { recvDCRef.current.close(); } catch {} recvDCRef.current = null; }
+      if (dcRef.current) { try { dcRef.current.close(); } catch {} dcRef.current = null; }
       if (pcRef.current) { try { pcRef.current.close(); } catch {} pcRef.current = null; }
       if (micStreamRef.current) { micStreamRef.current.getTracks().forEach((t) => t.stop()); micStreamRef.current = null; }
       if (localTTSRef.current) { try { localTTSRef.current.pause(); } catch {} localTTSRef.current = null; }
@@ -307,12 +309,12 @@ export function useRealtimeWebRTC() {
     }
   }, []);
 
-  // ---- Manual text (optional) ----
+  // ---------- manual text ----------
   const sendText = useCallback((text) => {
-    if (!sendDCRef.current || sendDCRef.current.readyState !== "open") return;
+    if (!dcRef.current || dcRef.current.readyState !== "open") return;
     try {
-      sendDCRef.current.send(JSON.stringify({ type: "input_text.append", text }));
-      sendDCRef.current.send(JSON.stringify({ type: "response.create" }));
+      dcRef.current.send(JSON.stringify({ type: "input_text.append", text }));
+      dcRef.current.send(JSON.stringify({ type: "response.create" }));
       DEBUG && log("sent text + response.create");
     } catch (e) {
       setLastError(String(e?.message || e));
