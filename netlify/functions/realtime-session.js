@@ -1,22 +1,20 @@
 // /netlify/functions/realtime-session.js
-// Issues a short-lived OpenAI Realtime *client secret* for the browser.
-// Returns: { token, model, voice, expires_at }
+// Issues an ephemeral OpenAI Realtime session token for the browser.
+// Env: OPENAI_API_KEY (required), REALTIME_MODEL (optional), REALTIME_VOICE (optional)
 
-export async function handler(event) {
-  // Allow POST only (the client calls POST)
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Method Not Allowed" }),
-    };
-  }
-
-  // Basic CORS (optional)
+export async function handler(event, _context) {
   const cors = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
+
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 200, headers: cors, body: "" };
+  }
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, headers: cors, body: "Method Not Allowed" };
+  }
 
   try {
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -28,14 +26,12 @@ export async function handler(event) {
       };
     }
 
-    const body = JSON.parse(event.body || "{}");
+    const { model: bodyModel, voice: bodyVoice } = JSON.parse(event.body || "{}");
     const model =
-      body.model ||
-      process.env.VITE_REALTIME_MODEL ||
-      "gpt-4o-realtime-preview-2024-12-17";
-    const voice = process.env.REALTIME_VOICE || "verse";
+      bodyModel || process.env.REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+    const voice = bodyVoice || process.env.REALTIME_VOICE || "verse";
 
-    const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
+    const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -45,38 +41,32 @@ export async function handler(event) {
       body: JSON.stringify({
         model,
         voice,
-        // Let the server handle turn-taking so it waits for you to finish
-        turn_detection: { type: "server_vad" },
+        modalities: ["text", "audio"],
+        // Let the server do VAD/turn detection (keeps client simple)
+        turn_detection: { type: "server_vad", threshold: 0.5, silence_duration_ms: 700 },
       }),
     });
 
-    if (!resp.ok) {
-      const text = await resp.text();
+    if (!r.ok) {
+      const t = await r.text();
       return {
-        statusCode: resp.status,
+        statusCode: r.status,
         headers: cors,
-        body: JSON.stringify({ error: "OpenAI session create failed", detail: text }),
+        body: JSON.stringify({ error: "OpenAI session create failed", detail: t }),
       };
     }
 
-    const json = await resp.json();
+    const json = await r.json();
 
-    // 👇 THIS is what your hook expects:
-    //      useRealtimeVoice() reads json.token
-    const token = json?.client_secret?.value;
-    if (!token) {
-      return {
-        statusCode: 500,
-        headers: cors,
-        body: JSON.stringify({ error: "No client_secret.value in OpenAI response" }),
-      };
-    }
-
+    // Return **both** shapes for maximum compatibility:
+    // - client_secret.value (OpenAI standard)
+    // - token (flat) for older client code
     return {
       statusCode: 200,
       headers: { ...cors, "Content-Type": "application/json" },
       body: JSON.stringify({
-        token,
+        client_secret: json?.client_secret || null,
+        token: json?.client_secret?.value || null,
         model,
         voice,
         expires_at: json?.expires_at || null,

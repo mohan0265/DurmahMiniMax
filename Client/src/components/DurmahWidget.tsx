@@ -1,108 +1,72 @@
-import React, { useMemo } from "react";
-import { motion } from "framer-motion";
+// Client/src/components/DurmahWidget.tsx
+// One-button UI + small transcript panel (robust against empty/partial data).
+
+import React, { useState } from "react";
 import { Mic, MicOff } from "lucide-react";
 import { useRealtimeVoice } from "../hooks/useRealtimeVoice";
 
-// SAFE shape for a transcript line (loose so it never crashes)
-type Line = { id?: string; text?: string };
-
-/**
- * Minimal, ChatGPT-style floating mic + small transcript box.
- * - No direct calls to realtime-session here (the hook handles it).
- * - No `.value` reads anywhere.
- * - No TypeScript "never" errors (we coerce transcript to Line[]).
- */
 const DurmahWidget: React.FC = () => {
+  const [open, setOpen] = useState(true);
   const {
-    isConnected,
-    isListening,
-    isSpeaking,
-    transcript,
-    partialTranscript,
-    lastError,
+    voiceModeActive,
     startVoiceMode,
     stopVoiceMode,
+    transcript,
+    partialTranscript,
+    status,
+    isSpeaking,
   } = useRealtimeVoice();
 
-  // Coerce whatever we get into a safe Line[] so TS won't infer `never`
-  const lines: Line[] = useMemo(() => {
-    if (!Array.isArray(transcript)) return [];
-    // normalize: strings -> { text }, objects keep id/text if present
-    return transcript.map((t: any) =>
-      typeof t === "string" ? { text: t } : (t as Line)
-    );
-  }, [transcript]);
-
-  const toggleVoice = async () => {
-    if (isConnected) {
-      stopVoiceMode();
-    } else {
-      await startVoiceMode();
-    }
+  const toggle = () => {
+    if (voiceModeActive) stopVoiceMode();
+    else startVoiceMode();
   };
 
+  const list = Array.isArray(transcript) ? transcript : [];
+
   return (
-    <>
-      {/* Floating Mic Button */}
-      <motion.button
-        onClick={toggleVoice}
-        className={`fixed bottom-6 right-6 w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition ${
-          isConnected ? "bg-red-500" : "bg-purple-600"
+    <div className="fixed bottom-6 right-6 z-50">
+      {/* Mic Button */}
+      <button
+        onClick={toggle}
+        title={voiceModeActive ? "Stop voice" : "Start voice"}
+        className={`w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition ${
+          voiceModeActive ? "bg-red-500 hover:bg-red-600" : "bg-purple-600 hover:bg-purple-700"
         }`}
-        whileTap={{ scale: 0.92 }}
-        animate={{ scale: isSpeaking ? 1.1 : 1.0 }}
-        transition={{ duration: 0.25, repeat: isSpeaking ? Infinity : 0, repeatType: "reverse" }}
-        aria-label={isConnected ? "Stop voice" : "Start voice"}
       >
-        {isConnected ? (
+        {voiceModeActive ? (
           <MicOff className="text-white w-8 h-8" />
         ) : (
           <Mic className="text-white w-8 h-8" />
         )}
-      </motion.button>
+      </button>
 
-      {/* Transcript Box */}
-      <div className="fixed bottom-28 right-6 w-80 max-h-96 bg-white shadow-lg rounded-md border border-gray-200 flex flex-col">
-        <div className="px-4 py-2 bg-purple-600 text-white font-semibold rounded-t-md">
-          Conversation Transcript
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-3 text-sm space-y-2">
-          {lines.length > 0 ? (
-            lines.map((line, idx) => (
-              <div
-                key={line?.id ?? idx}
-                className="p-2 rounded-md bg-gray-100 text-gray-800"
-              >
-                {line?.text ?? ""}
+      {/* Transcript Panel */}
+      {open && (
+        <div className="mt-3 w-80 bg-white/95 backdrop-blur rounded-xl border border-gray-200 shadow-xl p-3">
+          <div className="font-semibold text-purple-700">Conversation Transcript</div>
+          <div className="h-40 overflow-y-auto mt-2 space-y-1">
+            {list.length > 0 ? (
+              list.map((line: any, idx: number) => (
+                <div key={line?.id ?? idx} className="p-2 rounded-md bg-gray-100 text-sm">
+                  {line?.text ?? ""}
+                </div>
+              ))
+            ) : (
+              <div className="text-gray-400 italic text-center text-sm">
+                No conversation yet...
               </div>
-            ))
-          ) : (
-            <div className="text-gray-400 italic text-center">
-              No conversation yet...
-            </div>
-          )}
-
-          {!!partialTranscript && (
-            <div className="p-2 rounded-md bg-yellow-100 text-gray-800">
-              {partialTranscript}
-            </div>
-          )}
-        </div>
-
-        <div className="px-4 py-2 border-t text-xs text-gray-600">
-          Status: {isConnected ? "Connected" : "Idle"} •{" "}
-          {isListening ? "🎤 Listening" : "Mic idle"} •{" "}
-          {isSpeaking ? "🗣️ Speaking" : "Silent"}
-        </div>
-
-        {lastError && (
-          <div className="px-4 py-2 border-t text-xs text-red-600">
-            Error: {lastError}
+            )}
+            {partialTranscript && (
+              <div className="p-2 rounded-md bg-yellow-100 text-sm">{partialTranscript}</div>
+            )}
           </div>
-        )}
-      </div>
-    </>
+          <div className="mt-2 text-xs text-gray-600">
+            Status: {status || "idle"} {isSpeaking ? "• Speaking" : ""}
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
 
