@@ -1,16 +1,20 @@
-// [GEMINI PATCH] Inserted by Gemini on 25 Aug for mic initialization
+// [GEMINI PATCH] Inserted by Gemini on 25 Aug for mic initialization and endpoint debugging
 import { useCallback, useRef, useState } from "react";
 import toast from 'react-hot-toast';
 
+// [GEMINI PATCH] Added console.log to debug Vite environment variable injection.
+console.log("[Debug] VITE_SESSION_ENDPOINT at runtime:", import.meta.env.VITE_SESSION_ENDPOINT);
+
 function getAbsoluteEndpoint() {
-  const v = (import.meta?.env?.VITE_SESSION_ENDPOINT || "").trim();
-  if (!/^https?:\/\//i.test(v)) {
-    const msg = `[Durmah][FATAL] VITE_SESSION_ENDPOINT must be absolute, got "${v}"`;
-    console.error(msg);
-    toast.error("App is misconfigured. See console.");
-    throw new Error(msg);
+  const endpoint = import.meta.env.VITE_SESSION_ENDPOINT;
+
+  if (!endpoint || !endpoint.startsWith("http")) {
+    console.error("[Durmah][FATAL] VITE_SESSION_ENDPOINT is not valid:", endpoint);
+    toast.error("Voice mode unavailable. Please try again later.");
+    throw new Error("VITE_SESSION_ENDPOINT is not a valid absolute URL.");
   }
-  return v;
+  
+  return endpoint;
 }
 
 export function useRealtimeWebRTC() {
@@ -58,13 +62,13 @@ export function useRealtimeWebRTC() {
     console.log("[Durmah] Attempting to connect...");
 
     try {
+      const endpoint = getAbsoluteEndpoint();
+      console.log("[RTC] connect → endpoint", endpoint);
+
       console.log("[Durmah] Requesting microphone permission...");
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       console.log("[Durmah] Microphone access granted.");
       micRef.current = micStream;
-
-      const endpoint = getAbsoluteEndpoint();
-      console.log("[RTC] connect → endpoint", endpoint);
 
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
