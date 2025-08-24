@@ -1,0 +1,14 @@
+# Secrets
+.env
+.env.local
+.env.production
+Server/.env
+Server/.env.local
+Client/.env
+Client/.env.local
+
+# Build & Logs
+node_modules/
+dist/
+build/
+.DS_Store

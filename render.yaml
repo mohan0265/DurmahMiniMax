@@ -1,0 +1,39 @@
+# render.yaml - Render.com deployment configuration for Durmah Voice Server
+services:
+  - type: web
+    name: durmah-voice-server
+    runtime: node
+    plan: starter # Change to standard or pro for production
+    region: oregon # Choose closest region to your users
+    buildCommand: cd Server && npm install
+    startCommand: cd Server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: LOG_LEVEL
+        value: info
+      - key: LOG_TO_FILE
+        value: true
+      - key: REALTIME_MODEL
+        value: gpt-4o-realtime-preview-2024-10-01
+      - key: OPENAI_VOICE
+        value: nova
+      - key: MAX_SESSION_MINUTES
+        value: 30
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_MAX
+        value: 100
+      - key: DEBUG_VOICE
+        value: false
+      - key: VOICE_LOOPBACK
+        value: false
+      # These need to be set manually in Render dashboard:
+      # - OPENAI_API_KEY (secret)
+      # - ELEVENLABS_API_KEY (secret, optional)
+      # - JWT_SECRET (secret)
+      # - ALLOWED_ORIGINS (should match your frontend URL)
+    healthCheckPath: /health
+    autoDeploy: true # Auto-deploy from git pushes
