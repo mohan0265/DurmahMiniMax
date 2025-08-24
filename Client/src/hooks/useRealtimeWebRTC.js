@@ -15,21 +15,25 @@ export function useRealtimeWebRTC() {
   const pcRef = useRef(null);
   const micStreamRef = useRef(null);
 
-  // OpenAI remote audio (fallback path)
+  // OpenAI remote audio (fallback when not using ElevenLabs)
   const audioElRef = useRef(null);
 
-  // ElevenLabs local player (speak once per turn)
+  // ElevenLabs local audio element (speak once per turn)
   const localTTSRef = useRef(null);
 
-  // Single bidirectional channel to OpenAI (send + receive events)
+  // Single bidirectional data channel
   const dcRef = useRef(null);
 
   const tokenRef = useRef(null);
   const modelRef = useRef(null);
 
-  // Remote speaking pulse (only when using OpenAI audio)
+  // Remote speaking pulse (OpenAI audio only)
   const audioCtxRef = useRef(null);
   const vadRemoteRef = useRef({ alive: false, raf: 0 });
+
+  // Simple “pending reply” guard & debounce
+  const pendingReplyRef = useRef(false);
+  const lastTriggerMsRef = useRef(0);
 
   // UI state
   const [status, setStatus] = useState("idle");
@@ -56,7 +60,7 @@ export function useRealtimeWebRTC() {
   };
 
   const startRemotePulse = (remoteStream) => {
-    if (USE_ELEVEN) return; // not used when ElevenLabs does TTS
+    if (USE_ELEVEN) return;
     try {
       const ACtx = window.AudioContext || window.webkitAudioContext;
       if (!ACtx || !remoteStream) return;
@@ -127,51 +131,63 @@ export function useRealtimeWebRTC() {
     }
   };
 
-  // Ask the model to speak a reply
-  const requestResponse = () => {
+  // Ask the model to speak a reply exactly once per turn
+  const requestResponseOnce = (reason = "") => {
+    const now = Date.now();
+    // basic debounce so we don't double-fire if we receive two close signals
+    if (now - lastTriggerMsRef.current < 400) return;
+    if (pendingReplyRef.current) return;
     if (!dcRef.current || dcRef.current.readyState !== "open") return;
     try {
+      pendingReplyRef.current = true;
+      lastTriggerMsRef.current = now;
       dcRef.current.send(JSON.stringify({ type: "response.create" }));
-      DEBUG && log("sent: response.create");
+      DEBUG && log("sent: response.create", reason || "");
     } catch {}
   };
 
   // ---------- server messages ----------
   const handleServerEvent = (evt) => {
-    try {
-      const msg = JSON.parse(evt.data);
-      if (DEBUG) log("recv:", msg);
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch { return; }
+    if (DEBUG) log("recv:", msg);
 
-      // ASR partial/completed
-      if (msg.type === "transcript.partial" && typeof msg.text === "string") {
-        setPartialTranscript(msg.text);
-      } else if (msg.type === "transcript.completed" && typeof msg.text === "string") {
+    // rate limit / error noise: clear pending if the server rejected a response
+    if (msg.type === "error") {
+      pendingReplyRef.current = false;
+      setLastError(msg.error?.message || "Server error");
+      return;
+    }
+
+    // ASR partial/completed
+    if (msg.type === "transcript.partial" && typeof msg.text === "string") {
+      setPartialTranscript(msg.text);
+    } else if (msg.type === "transcript.completed" && typeof msg.text === "string") {
+      setPartialTranscript("");
+      setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: msg.text }]);
+      // <- PRIMARY trigger: your utterance is done
+      requestResponseOnce("transcript.completed");
+    }
+
+    // Fallback trigger for runtimes that don't emit transcript events
+    if (msg.type === "input_audio_buffer.speech_stopped") {
+      requestResponseOnce("speech_stopped");
+    }
+
+    // New text output schema
+    if (msg.type === "response.output_text.delta" && typeof msg.delta === "string") {
+      setPartialTranscript((p) => p + msg.delta);
+    } else if (msg.type === "response.completed") {
+      // finished speaking / finished generating text
+      pendingReplyRef.current = false;
+
+      const out = msg.response?.output_text;
+      const full = Array.isArray(out) ? out.join("") : (typeof out === "string" ? out : "");
+      if (full.trim()) {
         setPartialTranscript("");
-        setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: msg.text }]);
-        // ensure the assistant replies to your completed utterance
-        requestResponse();
+        setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: full }]);
+        if (USE_ELEVEN) playEleven(full);
       }
-
-      // Some runtimes emit explicit user-turn end
-      if (msg.type === "input_audio_buffer.speech_stopped") {
-        requestResponse();
-      }
-
-      // New text output schema
-      if (msg.type === "response.output_text.delta" && typeof msg.delta === "string") {
-        setPartialTranscript((p) => p + msg.delta);
-      } else if (msg.type === "response.completed" && msg.response?.output_text) {
-        const full = Array.isArray(msg.response.output_text)
-          ? msg.response.output_text.join("")
-          : String(msg.response.output_text || "");
-        if (full.trim()) {
-          setPartialTranscript("");
-          setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: full }]);
-          if (USE_ELEVEN) playEleven(full);
-        }
-      }
-    } catch {
-      // ignore non-JSON
     }
   };
 
@@ -194,7 +210,7 @@ export function useRealtimeWebRTC() {
 
       // Remote audio (OpenAI fallback)
       pc.ontrack = (e) => {
-        if (USE_ELEVEN) return; // ignore, we use ElevenLabs TTS
+        if (USE_ELEVEN) return; // ElevenLabs handles TTS
         const [stream] = e.streams;
         const el = ensureAudioElement();
         el.srcObject = stream;
@@ -202,19 +218,18 @@ export function useRealtimeWebRTC() {
         startRemotePulse(stream);
       };
 
-      // Create one bidirectional data channel and use it for send+receive
+      // One bidirectional data channel
       dcRef.current = pc.createDataChannel("oai-events");
       dcRef.current.onopen = () => {
         DEBUG && log("data channel open");
-        // kick off first reply so the model starts speaking/listening
-        requestResponse();
+        // DO NOT auto-send response.create here; let VAD/transcripts trigger it.
       };
       dcRef.current.onmessage = handleServerEvent;
 
-      // Enable audio send/recv
+      // Audio send/recv
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
-      // Microphone
+      // Mic
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -246,8 +261,12 @@ export function useRealtimeWebRTC() {
             }
             const nowSpeaking = maxDev > 10;
             if (!speaking && nowSpeaking && dcRef.current && dcRef.current.readyState === "open") {
+              // cancel current assistant reply
               try { dcRef.current.send(JSON.stringify({ type: "response.cancel" })); } catch {}
+              // stop local TTS if playing
               if (localTTSRef.current) { try { localTTSRef.current.pause(); } catch {}; localTTSRef.current = null; setIsSpeaking(false); }
+              // allow a new response to be requested after user finishes
+              pendingReplyRef.current = false;
             }
             speaking = nowSpeaking;
             requestAnimationFrame(tick);
@@ -256,7 +275,7 @@ export function useRealtimeWebRTC() {
         }
       } catch {}
 
-      // SDP offer/answer
+      // SDP handshaking
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(modelRef.current)}`;
@@ -289,6 +308,7 @@ export function useRealtimeWebRTC() {
       setIsListening(false);
       setIsConnected(false);
       setStatus("idle");
+      pendingReplyRef.current = false;
     }
   }, [isConnected, status]);
 
@@ -306,6 +326,7 @@ export function useRealtimeWebRTC() {
       setIsConnected(false);
       setIsSpeaking(false);
       setStatus("idle");
+      pendingReplyRef.current = false;
     }
   }, []);
 
@@ -314,7 +335,7 @@ export function useRealtimeWebRTC() {
     if (!dcRef.current || dcRef.current.readyState !== "open") return;
     try {
       dcRef.current.send(JSON.stringify({ type: "input_text.append", text }));
-      dcRef.current.send(JSON.stringify({ type: "response.create" }));
+      requestResponseOnce("manual text");
       DEBUG && log("sent text + response.create");
     } catch (e) {
       setLastError(String(e?.message || e));
