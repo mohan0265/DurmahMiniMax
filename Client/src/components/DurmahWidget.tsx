@@ -1,4 +1,4 @@
-// Client/src/components/DurmahWidget.tsx - Drop-in voice tutoring widget (direct realtime)
+// [GEMINI PATCH] Inserted by Gemini on 25 Aug for mic initialization
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -18,9 +18,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { useVoiceMode } from '../contexts/VoiceModeContext';
-import { useMode } from '../hooks/useMode';
-import { directRealtimeConnect } from '../lib/realtimeDirect.js';
+import { useRealtimeVoice } from '../hooks/useRealtimeVoice';
 import toast, { Toaster } from 'react-hot-toast';
 import clsx from 'clsx';
 import VoiceIndicator from './Voice/VoiceIndicator';
@@ -250,7 +248,7 @@ const VoiceControls: React.FC<{
 };
 
 const MessageBubble: React.FC<{ message: any; isLatest?: boolean }> = ({ message, isLatest }) => {
-  const isUser = message.role === 'user';
+  const isUser = message.sender === 'user';
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -264,9 +262,9 @@ const MessageBubble: React.FC<{ message: any; isLatest?: boolean }> = ({ message
           isLatest && 'shadow-md'
         )}
       >
-        <div className="whitespace-pre-wrap break-words">{message.content}</div>
+        <div className="whitespace-pre-wrap break-words">{message.text}</div>
         <div className={clsx('text-xs mt-1 opacity-70', isUser ? 'text-purple-100' : 'text-gray-500')}>
-          {message.type === 'audio' && '🎤 '}
+          {message.type === 'voice' && '🎤 '}
           {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </div>
       </div>
@@ -317,234 +315,39 @@ const TextInput: React.FC<{ onSendMessage: (t: string) => void; disabled: boolea
   );
 };
 
-const LoginCallout: React.FC<{ onSignIn?: () => void }> = ({ onSignIn }) => (
-  <div className="px-4 py-3 bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-lg">
-    <div className="flex items-center gap-3">
-      <div className="text-2xl">🔐</div>
-      <div className="flex-1">
-        <p className="text-sm font-medium text-purple-800">Sign in to use voice</p>
-        <p className="text-xs text-purple-600 mt-1">Voice mode requires authentication for personalized learning</p>
-      </div>
-      {onSignIn && (
-        <button
-          onClick={onSignIn}
-          className="px-3 py-1.5 bg-purple-600 text-white text-xs font-medium rounded-lg hover:bg-purple-700 transition-colors"
-        >
-          Sign In
-        </button>
-      )}
-    </div>
-  </div>
-);
-
 // ========= Main Widget =========
 const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
-  apiBase = '/api',
-  theme = 'auto',
   position = 'bottom-right',
   primaryColor = '#7c3aed',
   showBranding = true,
   allowTextFallback = true,
-  autoStart = false,
-  userId,
-  sessionToken,
-  debugMode = false,
 }) => {
-  // Env flags + endpoint (these are the lines you asked for)
-  const VENV = (import.meta as any)?.env ?? {};
-  const ALLOW_ANON = VENV.VITE_ALLOW_ANON_VOICE !== 'false'; // default true
-  const REQUIRE_LOGIN = VENV.VITE_REQUIRE_LOGIN === 'true';   // default false
-  const RAW_ENDPOINT = (VENV.VITE_SESSION_ENDPOINT || '').trim(); // can be blank; helper will fallback
+  const { user } = useAuth();
+  const {
+    isConnected,
+    isConnecting,
+    isListening,
+    voiceModeActive,
+    connect,
+    startVoiceMode,
+    stopVoiceMode,
+    conversationHistory,
+    sendTextMessage,
+    clearConversation,
+    error,
+  } = useRealtimeVoice();
 
-  // Auth and Voice Mode Context
-  const auth = useAuth();
-  const voiceMode = useVoiceMode();
-  const mode = useMode();
-  const user = auth.user;
-  const canUseVoice = auth.hasVoiceAccess || (!REQUIRE_LOGIN && ALLOW_ANON);
-  const userDisplayName = auth.displayName || user?.displayName || 'there';
-
-  // Local UI state
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [showWelcome, setShowWelcome] = useState(true);
-  const [banner, setBanner] = useState<string | null>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
-
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [hasGreeted, setHasGreeted] = useState(false);
-
-  // Voice state now managed by VoiceModeContext
-  const isListening = voiceMode.isListening;
-  const isSpeaking = voiceMode.isSpeaking;
-  const isThinking = voiceMode.isThinking;
-  const voiceLevel = voiceMode.audioLevel;
-
-  const [voiceSettings, setVoiceSettings] = useState({
-    inputGain: 1,
-    outputVolume: 1,
-    echoCancellation: true,
-    noiseSuppression: true,
-  });
-
-  // Conversation history managed by VoiceModeContext with proper continuity
-  const conversationHistory = voiceMode.conversationHistory;
-  const setConversationHistory = (updater: any) => {
-    if (typeof updater === 'function') {
-      const newHistory = updater(conversationHistory);
-      // Add each message through the context
-      const lastMessage = newHistory[newHistory.length - 1];
-      if (lastMessage && !conversationHistory.find(m => m.id === lastMessage.id)) {
-        voiceMode.addMessage(lastMessage);
-      }
-    }
-  };
-  const directRef = useRef<{ stop: () => void; sendText?: (t: string) => void } | null>(null);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const widgetRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversationHistory, isThinking]);
-
-  useEffect(() => {
-    console.log('[Durmah] endpoint =', RAW_ENDPOINT);
-  }, []);
-
-  // Derived status functions
-  const getStatus = () => {
-    if (isConnecting) return 'connecting';
-    if (!isConnected) return 'disconnected';
-    if (isListening) return 'listening';
-    if (isSpeaking) return 'speaking';
-    if (isThinking) return 'thinking';
-    return 'ready';
-  };
-  const getStatusMessage = () => {
-    if (isConnecting) return 'Connecting...';
-    return isConnected ? (isListening ? 'Listening…' : 'Connected') : 'Ready to connect';
-  }
-
-  // ========= Handlers =========
-  const handleConnect = async () => {
-    if (isConnected || isConnecting) return;
-
-    try {
-      setIsConnecting(true);
-      setBanner('Connecting to Durmah...');
-      console.log('[Durmah] connect:start');
-      if (directRef.current) {
-        directRef.current.stop();
-        directRef.current = null;
-      }
-      const handle = await directRealtimeConnect(
-        RAW_ENDPOINT,
-        (...a: any[]) => console.log(...a),
-        { autoGreet: false }
-      );
-      
-      handle.onAudioStart(() => {
-        voiceMode.setIsSpeaking(true);
-        voiceMode.setIsThinking(false);
-      });
-      
-      handle.onAudioEnd(() => {
-        voiceMode.setIsSpeaking(false);
-      });
-      
-      handle.onTranscript((text: string) => {
-        const formattedResponse = voiceMode.formatResponseForMode(text, mode.mode);
-        voiceMode.addMessage({ 
-          role: 'assistant', 
-          content: formattedResponse, 
-          type: 'voice',
-          originalContent: text
-        });
-      });
-      
-      directRef.current = handle;
-      setIsConnected(true);
-      setBanner('🎤 Microphone is live! You can start speaking now.');
-      setShowWelcome(false);
-      
-      if (!hasGreeted && canUseVoice) {
-        setTimeout(() => {
-          const greeting = getPersonalizedVoiceGreeting();
-          handle.sendText(greeting);
-          setHasGreeted(true);
-          voiceMode.addMessage({ 
-            role: 'assistant', 
-            content: greeting, 
-            type: 'greeting' 
-          });
-        }, 500);
-      }
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setBanner('Could not connect: ' + msg);
-      setIsConnected(false);
-      console.error('[Durmah] connect failed', e);
-    } finally {
-      setIsConnecting(false);
-    }
-  };
-
-  const handleMic = async () => {
-    try {
-      if (!isConnected) {
-        return;
-      }
-      
-      const result = await mode.toggle();
-      if (!result.success) {
-        if (result.reason === 'no_voice_access') {
-          setBanner('Voice access not available. Please sign in.');
-        } else if (result.reason === 'mic_denied') {
-          setBanner('Microphone access denied. Please enable in browser settings.');
-        } else {
-          setBanner('Voice mode activation failed. Switched to text mode.');
-        }
-      } else {
-        voiceMode.setIsListening(mode.isListening);
-        setBanner(mode.isListening ? 'Listening…' : 'Connected. You can start speaking.');
-      }
-    } catch (e) {
-      console.error('[Durmah] mic toggle failed', e);
-      setBanner('Mic toggle failed. See console.');
-    }
-  };
 
   const handleToggleWidget = () => {
-    if (!isOpen) {
-      setIsOpen(true);
-      setIsMinimized(false);
-      setShowTranscript(false);
-      handleConnect();
-    } else {
-      setShowTranscript(true);
-      if (directRef.current) {
-        directRef.current.stop();
-        directRef.current = null;
-      }
-      setIsConnected(false);
-      setIsConnecting(false);
-      setHasGreeted(false);
-    }
-  };
-
-  const handleSave = () => {
-    const title = prompt('Enter a title for this conversation:', `Conversation from ${new Date().toLocaleDateString()}`);
-    if (title) {
-      voiceMode.saveConversation(title);
+    if (isOpen) {
+      stopVoiceMode();
       setIsOpen(false);
+    } else {
+      setIsOpen(true);
+      startVoiceMode();
     }
-  };
-
-  const handleDiscard = () => {
-    voiceMode.clearConversation();
-    setIsOpen(false);
   };
 
   const getPositionClasses = () => {
@@ -560,30 +363,8 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
     }
   };
 
-  const getPersonalizedVoiceGreeting = () => {
-    const hour = new Date().getHours();
-    const name = userDisplayName === 'there' ? '' : `, ${userDisplayName}`;
-    
-    if (hour >= 6 && hour < 12) return `Good morning${name}.`;
-    if (hour >= 12 && hour < 17) return `Good afternoon${name}.`;
-    if (hour >= 17 && hour < 22) return `Good evening${name}.`;
-    return `Hi ${name}, burning the midnight oil?`;
-  };
-
-  const sendTyped = (text: string) => {
-    voiceMode.addMessage({ 
-      role: 'user', 
-      content: text, 
-      type: 'text' 
-    });
-    
-    const context = voiceMode.getConversationContext();
-    directRef.current?.sendText?.(text, context);
-  };
-
-  // ========= Render =========
   return (
-    <div className={clsx('fixed z-50', getPositionClasses())} ref={widgetRef}>
+    <div className={clsx('fixed z-50', getPositionClasses())}>
       <Toaster
         position="top-center"
         toastOptions={{
@@ -592,7 +373,6 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
         }}
       />
 
-      {/* FAB */}
       <AnimatePresence>
         {!isOpen && (
           <motion.button
@@ -609,20 +389,12 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
             style={{ backgroundColor: primaryColor }}
             title={'Click to start Durmah'}
           >
-            {(isConnecting) && (
-              <motion.div
-                className="absolute inset-0 rounded-full border-2 border-white"
-                animate={{ scale: [1, 1.2, 1], opacity: [0.7, 0.3, 0.7] }}
-                transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-              />
-            )}
             <MessageCircle className="w-8 h-8" />
             <div className="absolute -top-1 -right-1 w-6 h-6 bg-yellow-400 rounded-full flex items-center justify-center text-xs">🦅</div>
           </motion.button>
         )}
       </AnimatePresence>
 
-      {/* Panel */}
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -635,7 +407,6 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
               isMinimized ? 'w-80 h-16' : 'w-96 h-[32rem] max-w-[90vw] max-h-[80vh] sm:max-w-96 sm:max-h-[32rem]'
             )}
           >
-            {/* Header */}
             <div className="flex items-center justify-between p-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white">
               <div className="flex items-center gap-3">
                 <div className="text-2xl">🦅</div>
@@ -660,120 +431,21 @@ const DurmahWidget: React.FC<DurmahWidgetConfig> = ({
 
             {!isMinimized && (
               <>
-                {/* Status with Voice Mode Indicator */}
-                <div className="px-4 py-2 bg-gray-50 border-b">
-                  <div className="flex items-center justify-between">
-                    <StatusIndicator status={getStatus()} message={getStatusMessage()} isConnected={isConnected} isConnecting={isConnecting} />
-                    {canUseVoice && (
-                      <VoiceIndicator 
-                        variant="compact" 
-                        showLabel={false} 
-                        showModeToggle={true}
-                        className="ml-2"
-                      />
-                    )}
-                  </div>
-                </div>
-
-                {/* Messages */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-[20rem]">
-                  {showWelcome && conversationHistory.length === 0 && !showTranscript && (
-                    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-center py-8">
-                      <div className="text-4xl mb-2">🦅</div>
-                      <h3 className="font-semibold text-gray-800 mb-1">Hello! I'm Durmah</h3>
-                      <p className="text-sm text-gray-600 mb-4">I'm connecting...</p>
-                    </motion.div>
-                  )}
-
-                  {(showTranscript || isConnected) && conversationHistory.map((m, i) => (
+                  {conversationHistory.map((m, i) => (
                     <MessageBubble key={m.id} message={m} isLatest={i === conversationHistory.length - 1} />
                   ))}
-
-                  {isThinking && (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start mb-4">
-                      <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-2">
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-
-                  <div ref={messagesEndRef} />
                 </div>
 
-                {/* Controls */}
                 <div className="border-t">
-                  {showTranscript ? (
-                    <div className="p-3 bg-gray-50 flex justify-around">
-                      <button onClick={handleSave} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white transition-colors">
-                        <Save className="w-4 h-4" />
-                        Save
-                      </button>
-                      <button onClick={handleDiscard} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors">
-                        <Trash2 className="w-4 h-4" />
-                        Discard
-                      </button>
-                    </div>
-                  ) : canUseVoice ? (
-                    <>
-                      <div className="flex items-center justify-between p-3 bg-gray-50">
-                        <VoiceControls
-                          isConnected={isConnected}
-                          isListening={isListening}
-                          isSpeaking={isSpeaking}
-                          isThinking={isThinking}
-                          voiceLevel={voiceLevel}
-                          onToggleVoice={handleMic}
-                          voiceSettings={voiceSettings}
-                          onSettingsChange={setVoiceSettings}
-                        />
-                        <div className="flex items-center gap-2">
-                          {conversationHistory.length > 0 && (
-                            <button
-                              onClick={() => voiceMode.clearConversation()}
-                              className="px-3 py-1 text-xs text-gray-500 hover:text-gray-700 transition-colors"
-                              title="Clear conversation"
-                            >
-                              Clear
-                            </button>
-                          )}
-                          <VoiceIndicator 
-                            variant="badge" 
-                            showLabel={true} 
-                            showModeToggle={false}
-                            className="text-xs"
-                          />
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="p-3 bg-gray-50">
-                      <LoginCallout
-                        onSignIn={() => {
-                          window.location.href = '/login';
-                        }}
-                      />
+                  {error && (
+                    <div className="p-3 bg-red-100 text-red-700 text-center">
+                      ❌ Voice mode not available. Please use text chat.
                     </div>
                   )}
-
-                  {banner && (
-                    <div className="mx-3 my-2 rounded-md bg-yellow-50 border border-yellow-200 px-3 py-2 text-xs text-yellow-900">{banner}</div>
-                  )}
-
-                  {allowTextFallback && canUseVoice && !showTranscript && (
-                    <TextInput onSendMessage={sendTyped} disabled={!isConnected} />
-                  )}
+                  <TextInput onSendMessage={sendTextMessage} disabled={!voiceModeActive} />
                 </div>
               </>
-            )}
-
-            {showBranding && !isMinimized && (
-              <div className="px-4 py-1 bg-gray-50 border-t">
-                <p className="text-xs text-gray-400 text-center">Built with ❤️ for Durham Law Students</p>
-              </div>
             )}
           </motion.div>
         )}

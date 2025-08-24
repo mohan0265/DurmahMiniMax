@@ -1,20 +1,13 @@
-// Client/src/hooks/useRealtimeWebRTC.js
+// [GEMINI PATCH] Inserted by Gemini on 25 Aug for mic initialization
 import { useCallback, useRef, useState } from "react";
-
-/**
- * WebRTC hook for OpenAI Realtime via our Render proxy.
- * - Creates RTCPeerConnection
- * - Captures mic
- * - Sends SDP offer to backend: VITE_SESSION_ENDPOINT (ABSOLUTE URL)
- * - Backend forwards to OpenAI; returns SDP answer (application/sdp)
- * - setRemoteDescription(answer) and play remote audio
- */
+import toast from 'react-hot-toast';
 
 function getAbsoluteEndpoint() {
   const v = (import.meta?.env?.VITE_SESSION_ENDPOINT || "").trim();
   if (!/^https?:\/\//i.test(v)) {
     const msg = `[Durmah][FATAL] VITE_SESSION_ENDPOINT must be absolute, got "${v}"`;
     console.error(msg);
+    toast.error("App is misconfigured. See console.");
     throw new Error(msg);
   }
   return v;
@@ -30,7 +23,6 @@ export function useRealtimeWebRTC() {
   const [error, setError] = useState(null);
   const [conversationHistory, setConversationHistory] = useState([]);
   
-  // Voice settings (for compatibility)
   const [voiceSettings, setVoiceSettings] = useState({
     inputGain: 1.0,
     outputVolume: 1.0,
@@ -47,28 +39,6 @@ export function useRealtimeWebRTC() {
     remoteAudioRef.current.playsInline = true;
   }
 
-  // Status utilities
-  const getStatus = () => {
-    if (!isConnected && !isConnecting) return 'disconnected';
-    if (isConnecting) return 'connecting';
-    if (error) return 'error';
-    if (isSpeaking) return 'speaking';
-    if (isListening) return 'listening';
-    if (isThinking) return 'thinking';
-    return 'ready';
-  };
-  
-  const getStatusMessage = () => {
-    if (error) return `Error: ${error}`;
-    if (isConnecting) return 'Connecting to Durmah...';
-    if (!isConnected) return 'Click to connect';
-    if (isSpeaking) return 'Durmah is speaking...';
-    if (isListening) return 'Listening... speak naturally';
-    if (isThinking) return 'Thinking about your question...';
-    return 'Ready! Click to speak or type below.';
-  };
-
-  // Add message to conversation history
   const addMessage = (sender, text, type = 'text') => {
     const message = {
       id: Date.now() + Math.random(),
@@ -77,7 +47,6 @@ export function useRealtimeWebRTC() {
       type,
       timestamp: new Date().toISOString()
     };
-    
     setConversationHistory(prev => [...prev, message]);
   };
 
@@ -86,11 +55,17 @@ export function useRealtimeWebRTC() {
     
     setError(null);
     setIsConnecting(true);
-    
-    const endpoint = getAbsoluteEndpoint();
-    console.log("[RTC] connect → endpoint", endpoint);
+    console.log("[Durmah] Attempting to connect...");
 
     try {
+      console.log("[Durmah] Requesting microphone permission...");
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("[Durmah] Microphone access granted.");
+      micRef.current = micStream;
+
+      const endpoint = getAbsoluteEndpoint();
+      console.log("[RTC] connect → endpoint", endpoint);
+
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -99,28 +74,23 @@ export function useRealtimeWebRTC() {
       pc.onconnectionstatechange = () => {
         console.log("[RTC] state:", pc.connectionState);
         setIsConnected(pc.connectionState === "connected");
-      };
-
-      pc.ontrack = (ev) => {
-        console.log("[RTC] remote track");
-        if (remoteAudioRef.current && ev.streams[0]) {
-          remoteAudioRef.current.srcObject = ev.streams[0];
-          remoteAudioRef.current
-            .play()
-            .catch((e) => console.warn("autoplay blocked", e));
+        if (pc.connectionState === 'failed') {
+            setError("WebRTC connection failed.");
+            toast.error("Connection failed. Please try again.");
         }
       };
 
-      // Send/recv audio
-      pc.addTransceiver("audio", { direction: "sendrecv" });
+      pc.ontrack = (ev) => {
+        console.log("[RTC] remote track received");
+        if (remoteAudioRef.current && ev.streams && ev.streams[0]) {
+          remoteAudioRef.current.srcObject = ev.streams[0];
+          remoteAudioRef.current.play().catch(e => console.warn("[Durmah] Autoplay was blocked by browser", e));
+        }
+      };
 
-      // Mic
-      const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micRef.current = mic;
-      mic.getTracks().forEach((t) => pc.addTrack(t, mic));
-      console.log("[RTC] mic tracks:", mic.getAudioTracks().length);
+      micStream.getTracks().forEach((track) => pc.addTrack(track, micStream));
+      console.log("[RTC] mic tracks added to peer connection.");
 
-      // Offer → backend → OpenAI → Answer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -129,26 +99,27 @@ export function useRealtimeWebRTC() {
         headers: { "Content-Type": "application/sdp" },
         body: offer.sdp,
       });
+
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
+        const txt = await res.text().catch(() => "Server error with no message");
         throw new Error(`SDP exchange failed: ${res.status} ${txt}`);
       }
+
       const answerSdp = await res.text();
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-      console.log("[RTC] connected (SDP answered)");
+      console.log("[RTC] Connected successfully (SDP answer received).");
       setIsConnected(true);
-      setIsConnecting(false);
-      
       addMessage('durmah', 'Connected! I can hear you now. How can I help with your legal studies?', 'voice');
-      
       return true;
+
     } catch (e) {
-      console.error("[RTC] connect failed", e);
+      console.error("[Durmah] Connection or microphone access failed:", e);
       setError(e.message || String(e));
-      setIsConnected(false);
+      toast.error("Microphone access denied or not supported in this browser.");
+      return false;
+    } finally {
       setIsConnecting(false);
-      throw e;
     }
   }, [isConnecting, isConnected]);
 
@@ -184,7 +155,13 @@ export function useRealtimeWebRTC() {
   }, []);
 
   const startVoiceMode = useCallback(async () => {
-    if (!isConnected) await connect();
+    if (!isConnected) {
+        const connected = await connect();
+        if (!connected) {
+            setVoiceModeActive(false);
+            return false;
+        }
+    }
     console.log("[RTC] starting voice mode");
     setIsListening(true);
     setVoiceModeActive(true);
@@ -198,41 +175,30 @@ export function useRealtimeWebRTC() {
     addMessage('durmah', 'Voice mode stopped. You can start again anytime!', 'text');
   }, []);
 
-  // Send text message (fallback when not in voice mode)
   const sendTextMessage = useCallback((text) => {
     if (!text.trim()) return;
-    
-    // Add user message
     addMessage('user', text, 'text');
-    
-    // Simulate AI response
     setTimeout(() => {
       addMessage('durmah', `I received your message: "${text}". This is a simulated text response. Try voice mode for real-time conversation!`, 'text');
     }, 500);
   }, []);
 
-  // Clear conversation
   const clearConversation = useCallback(() => {
     setConversationHistory([]);
     console.log('[RTC] conversation cleared');
   }, []);
 
   return {
-    // Connection state
     isConnected,
     isConnecting,
     isListening,
     isSpeaking,
     isThinking,
     voiceModeActive,
-    
-    // Data
     conversationHistory,
     error,
-    connectionError: error, // Alias for error
+    connectionError: error,
     voiceSettings,
-    
-    // Actions  
     connect,
     disconnect,
     startVoiceMode,
@@ -240,9 +206,5 @@ export function useRealtimeWebRTC() {
     sendTextMessage,
     clearConversation,
     setVoiceSettings,
-    
-    // Utilities
-    getStatus,
-    getStatusMessage
   };
 }
