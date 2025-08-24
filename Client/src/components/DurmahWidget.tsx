@@ -1,209 +1,214 @@
-// [GEMINI PATCH] Fixed by Gemini on 25 Aug for full-duplex voice
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+// Client/src/components/DurmahWidget.tsx
+// Floating voice widget with full UI: start/stop, status badges, transcript pane,
+// text input fallback, keyboard toggle (Ctrl/Cmd + V), and subtle animations.
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  MessageCircle,
-  X,
   Mic,
   MicOff,
   Volume2,
-  AlertTriangle,
-  Wifi,
-  WifiOff,
-  Settings,
+  Loader2,
+  Bot,
+  X,
+  Send,
   Minimize2,
   Maximize2,
-  Send,
-  Zap,
-  Brain,
-  Sparkles,
-} from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
-import { useRealtimeVoice } from '../hooks/useRealtimeVoice';
-import toast, { Toaster } from 'react-hot-toast';
-import clsx from 'clsx';
+} from "lucide-react";
+import { useRealtimeVoice } from "../hooks/useRealtimeVoice";
 
-// ========= Main Widget =========
-const DurmahWidget: React.FC = () => {
-  const { user } = useAuth();
+type Props = {
+  startOpen?: boolean;
+  title?: string;
+};
+
+const kbd = (e: KeyboardEvent) =>
+  (e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "v");
+
+const Badge = ({ color, children }: { color: "green" | "blue" | "red" | "amber"; children: React.ReactNode }) => {
+  const map: Record<string, string> = {
+    green: "bg-green-100 text-green-800",
+    blue: "bg-blue-100 text-blue-800",
+    red: "bg-red-100 text-red-800",
+    amber: "bg-amber-100 text-amber-800",
+  };
+  return (
+    <span className={`px-2 py-0.5 text-xs rounded-full ${map[color]} whitespace-nowrap`}>
+      {children}
+    </span>
+  );
+};
+
+const Dot = ({ active }: { active: boolean }) => (
+  <span
+    className={`inline-block w-2 h-2 rounded-full ${active ? "bg-green-500 animate-pulse" : "bg-gray-300"}`}
+  />
+);
+
+const bubbleVariants = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+};
+
+const containerVariants = {
+  initial: { opacity: 0, y: 16, scale: 0.98 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: 16, scale: 0.98 },
+};
+
+const inputVariants = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+};
+
+function useKeyboardToggle(onToggle: () => void) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (kbd(e)) {
+        e.preventDefault();
+        onToggle();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onToggle]);
+}
+
+export default function DurmahWidget({ startOpen = false, title = "Durmah Voice" }: Props) {
   const {
     isConnected,
-    isConnecting,
     isListening,
     isSpeaking,
-    isThinking,
     voiceModeActive,
-    connect,
+    status,
+    lastError,
+    transcript,
+    partialTranscript,
     startVoiceMode,
     stopVoiceMode,
-    conversationHistory,
-    sendTextMessage,
-    partialTranscript,
-    error,
+    connect,
+    sendMessage,
   } = useRealtimeVoice();
 
-  const [isOpen, setIsOpen] = useState(false);
-  const [isMinimized, setIsMinimized] = useState(false);
-  const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(startOpen);
+  const [expanded, setExpanded] = useState(true);
+  const [input, setInput] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const handleToggleWidget = () => {
-    if (isOpen) {
-      if (voiceModeActive) stopVoiceMode();
-      setIsOpen(false);
-    } else {
-      setIsOpen(true);
-      if (!isConnected) {
-        connect();
-      }
-    }
-  };
-
-  const handleToggleInputMode = () => {
-    if (inputMode === 'voice') {
-      if (voiceModeActive) stopVoiceMode();
-      setInputMode('text');
-      toast('📝 Switched to text mode', { duration: 2000 });
-    } else {
-      setInputMode('voice');
-      startVoiceMode();
-      toast('🎤 Switched to voice mode', { duration: 2000 });
-    }
-  };
-
-  const handleSendText = (text: string) => {
-    if (voiceModeActive) {
-      stopVoiceMode();
-      setInputMode('text');
-    }
-    sendTextMessage(text);
-  };
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
+  // Auto-scroll transcript
   useEffect(() => {
-    scrollToBottom();
-  }, [conversationHistory, partialTranscript]);
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [transcript, partialTranscript]);
 
-  const getFloatingButtonContent = () => {
-    if (isListening) {
-      return (
-        <div className="relative">
-          <Mic className="w-6 h-6 text-white" />
-          <div className="absolute -inset-4 rounded-full bg-white/20 animate-ping" />
-        </div>
-      );
-    }
-    if (isSpeaking) {
-      return (
-        <div className="relative">
-          <Volume2 className="w-6 h-6 text-white animate-pulse" />
-          <div className="absolute -inset-4 rounded-full bg-white/20 animate-pulse" />
-        </div>
-      );
-    }
-    if (isConnecting) {
-      return <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />;
-    }
-    if (error) {
-      return <AlertTriangle className="w-6 h-6 text-white" />;
-    }
-    return <Brain className="w-6 h-6 text-white" />;
-  };
+  const connectedLabel = useMemo(() => {
+    if (status === "connecting") return "Connecting…";
+    if (status === "connected") return "Connected";
+    return "Offline";
+  }, [status]);
 
-  const getModeIndicator = () => {
-    if (inputMode === 'voice') {
-      if (isListening) return { icon: <Mic className="w-4 h-4" />, text: 'Listening...', color: 'text-green-600' };
-      if (isSpeaking) return { icon: <Volume2 className="w-4 h-4" />, text: 'Speaking...', color: 'text-blue-600' };
-      if (isThinking) return { icon: <Brain className="w-4 h-4" />, text: 'Thinking...', color: 'text-yellow-600' };
-      if (isConnected) return { icon: <Mic className="w-4 h-4" />, text: 'Voice Ready', color: 'text-purple-600' };
-      return { icon: <MicOff className="w-4 h-4" />, text: 'Voice Offline', color: 'text-gray-500' };
+  const onToggleVoice = useCallback(async () => {
+    if (!voiceModeActive) {
+      await startVoiceMode();
+      setOpen(true);
+    } else {
+      stopVoiceMode();
     }
-    return { icon: <MessageCircle className="w-4 h-4" />, text: 'Text Mode', color: 'text-gray-600' };
-  };
+  }, [voiceModeActive, startVoiceMode, stopVoiceMode]);
+
+  const onSend = useCallback(() => {
+    const t = input.trim();
+    if (!t) return;
+    sendMessage(t);
+    setInput("");
+  }, [input, sendMessage]);
+
+  useKeyboardToggle(onToggleVoice);
+
+  // One-click connect (useful if user opens panel before talking)
+  const handleConnectOnly = useCallback(async () => {
+    if (!isConnected) await connect();
+  }, [isConnected, connect]);
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
-      <Toaster position="top-center" />
+    <>
+      {/* Floating Button */}
+      <div className="fixed right-4 bottom-4 z-[1000]">
+        <div className="flex items-center gap-3 mb-2">
+          <Badge color={isConnected ? "green" : status === "connecting" ? "amber" : "red"}>
+            <div className="flex items-center gap-1">
+              <Dot active={isConnected} />
+              <span>{connectedLabel}</span>
+            </div>
+          </Badge>
+          <Badge color={isListening ? "blue" : "amber"}>
+            {isListening ? "Listening" : "Mic idle"}
+          </Badge>
+          <Badge color={isSpeaking ? "blue" : "amber"}>
+            {isSpeaking ? "Speaking" : "Silent"}
+          </Badge>
+        </div>
 
-      <AnimatePresence>
-        {!isOpen && (
-          <motion.button
-            initial={{ scale: 0, rotate: -180 }}
-            animate={{ scale: 1, rotate: 0 }}
-            exit={{ scale: 0, rotate: 180 }}
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={handleToggleWidget}
-            className="w-16 h-16 rounded-full bg-gradient-to-br from-purple-600 via-purple-700 to-indigo-600 text-white shadow-xl hover:shadow-2xl transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-purple-300/50 relative overflow-hidden flex items-center justify-center backdrop-blur-sm"
-            style={{
-              background: 'linear-gradient(135deg, #7c3aed 0%, #6366f1 50%, #4f46e5 100%)',
-            }}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="p-3 rounded-full shadow-lg bg-white hover:bg-gray-50 border border-gray-200"
+            aria-label={open ? "Close widget" : "Open widget"}
+            title={open ? "Close" : "Open"}
           >
-            {getFloatingButtonContent()}
-          </motion.button>
-        )}
-      </AnimatePresence>
+            {open ? <X className="w-5 h-5" /> : <Bot className="w-5 h-5" />}
+          </button>
 
+          <button
+            onClick={onToggleVoice}
+            className={`p-3 rounded-full shadow-lg border ${
+              voiceModeActive ? "bg-red-600 text-white border-red-700" : "bg-green-600 text-white border-green-700"
+            }`}
+            aria-label={voiceModeActive ? "Stop voice" : "Start voice"}
+            title={voiceModeActive ? "Stop (Ctrl/Cmd+V)" : "Start (Ctrl/Cmd+V)"}
+          >
+            {voiceModeActive ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+          </button>
+
+          {!isConnected && (
+            <button
+              onClick={handleConnectOnly}
+              className="p-3 rounded-full shadow-lg bg-white hover:bg-gray-50 border border-gray-200"
+              title="Prepare connection (optional)"
+            >
+              <Loader2 className={`w-5 h-5 ${status === "connecting" ? "animate-spin" : ""}`} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Panel */}
       <AnimatePresence>
-        {isOpen && (
+        {open && (
           <motion.div
-            initial={{ scale: 0, opacity: 0, originX: 1, originY: 1 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0, opacity: 0, originX: 1, originY: 1 }}
-            transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-            className={clsx(
-              'bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl border border-gray-200/50 overflow-hidden transition-all duration-300',
-              isMinimized ? 'w-80 h-16' : 'w-[28rem] h-[36rem] max-w-[90vw] max-h-[85vh] sm:max-w-[28rem] sm:max-h-[36rem]'
-            )}
-            style={{
-              backdropFilter: 'blur(20px) saturate(180%)',
-              background: 'rgba(255, 255, 255, 0.98)'
-            }}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            variants={containerVariants}
+            className="fixed bottom-20 right-4 z-[999] w-[380px] max-h-[70vh] rounded-2xl shadow-2xl border border-gray-200 bg-white overflow-hidden flex flex-col"
           >
-            {/* Modern Header */}
-            <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-purple-600/10 via-purple-500/10 to-indigo-600/10 border-b border-gray-200/50">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-lg">
-                  <Brain className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h2 className="font-bold text-lg bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
-                    Durmah
-                  </h2>
-                  <div className="flex items-center gap-2">
-                    <div className={clsx('flex items-center gap-1 text-xs', getModeIndicator().color)}>
-                      {getModeIndicator().icon}
-                      <span className="font-medium">{getModeIndicator().text}</span>
-                    </div>
-                  </div>
-                </div>
+            {/* Header */}
+            <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <div className="flex items-center gap-2">
+                <Bot className="w-5 h-5 text-gray-700" />
+                <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
+                <span className="text-[11px] text-gray-500">• {connectedLabel}</span>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={handleToggleInputMode}
-                  className={clsx(
-                    'p-2 rounded-xl transition-all duration-200 text-xs font-medium',
-                    inputMode === 'voice' 
-                      ? 'bg-purple-100 text-purple-700 hover:bg-purple-200' 
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  )}
-                  title={inputMode === 'voice' ? 'Switch to text mode' : 'Switch to voice mode'}
+                  onClick={() => setExpanded((v) => !v)}
+                  className="p-2 rounded-md hover:bg-gray-100"
+                  title={expanded ? "Collapse" : "Expand"}
                 >
-                  {inputMode === 'voice' ? <Mic className="w-4 h-4" /> : <MessageCircle className="w-4 h-4" />}
+                  {expanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                 </button>
                 <button
-                  onClick={() => setIsMinimized(!isMinimized)}
-                  className="p-2 rounded-xl hover:bg-gray-100 transition-colors text-gray-600"
-                  title={isMinimized ? 'Maximize' : 'Minimize'}
-                >
-                  {isMinimized ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
-                </button>
-                <button 
-                  onClick={handleToggleWidget} 
-                  className="p-2 rounded-xl hover:bg-gray-100 transition-colors text-gray-600" 
+                  onClick={() => setOpen(false)}
+                  className="p-2 rounded-md hover:bg-gray-100"
                   title="Close"
                 >
                   <X className="w-4 h-4" />
@@ -211,215 +216,101 @@ const DurmahWidget: React.FC = () => {
               </div>
             </div>
 
-            {!isMinimized && (
-              <>
-                <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-[20rem]">
-                  {conversationHistory.map((m, i) => (
-                    <MessageBubble key={m.id} message={m} isLatest={i === conversationHistory.length - 1} />
-                  ))}
-                  {partialTranscript && (
-                    <MessageBubble message={{ sender: 'user', text: partialTranscript, type: 'voice', timestamp: new Date().toISOString() }} isLatest={true} />
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
-
-                <div className="border-t">
-                  {error && (
-                    <div className="p-3 bg-red-100 text-red-700 text-center">
-                      {error}
+            {/* Body */}
+            <AnimatePresence initial={false}>
+              {expanded && (
+                <motion.div
+                  key="content"
+                  initial="initial"
+                  animate="animate"
+                  exit="initial"
+                  variants={bubbleVariants}
+                  className="flex-1 flex flex-col"
+                >
+                  {/* Status strip */}
+                  <div className="px-4 py-2 border-b border-gray-100 text-xs text-gray-600 bg-white/60 backdrop-blur-sm">
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1">
+                        <Mic className={`w-4 h-4 ${isListening ? "text-blue-600" : "text-gray-400"}`} />
+                        {isListening ? "Listening" : "Mic idle"}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Volume2 className={`w-4 h-4 ${isSpeaking ? "text-blue-600" : "text-gray-400"}`} />
+                        {isSpeaking ? "Speaking" : "Silent"}
+                      </span>
+                      <span className="ml-auto">
+                        {status === "connecting" ? (
+                          <span className="inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> connecting…</span>
+                        ) : (
+                          <span className="text-gray-500">Ctrl/Cmd + V to toggle</span>
+                        )}
+                      </span>
                     </div>
-                  )}
-                  {inputMode === 'voice' ? (
-                    <VoiceInput 
-                        isListening={isListening} 
-                        isSpeaking={isSpeaking} 
-                        isConnected={isConnected} 
-                        onToggleVoice={voiceModeActive ? stopVoiceMode : startVoiceMode} 
-                    />
-                  ) : (
-                    <ModernTextInput onSendMessage={handleSendText} disabled={!isConnected} />
-                  )}
-                </div>
-              </>
-            )}
+                  </div>
+
+                  {/* Transcript */}
+                  <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+                    {(!transcript || transcript.length === 0) && !partialTranscript && (
+                      <p className="text-xs text-gray-500">
+                        Start speaking or type below. Your assistant will reply with voice. 
+                      </p>
+                    )}
+
+                    {(transcript as any[]).map((t: any, idx: number) => (
+                      <motion.div
+                        key={t?.id ?? idx}
+                        initial="initial"
+                        animate="animate"
+                        variants={bubbleVariants}
+                        className="max-w-[90%] rounded-xl px-3 py-2 bg-gray-100 text-gray-800 text-sm"
+                      >
+                        {String(t?.text ?? "")}
+                      </motion.div>
+                    ))}
+
+                    {!!partialTranscript && (
+                      <div className="max-w-[90%] rounded-xl px-3 py-2 bg-indigo-50 text-indigo-900 text-sm border border-indigo-200">
+                        {partialTranscript}
+                      </div>
+                    )}
+
+                    {!!lastError && (
+                      <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                        {lastError}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Input */}
+                  <motion.div
+                    initial="initial"
+                    animate="animate"
+                    variants={inputVariants}
+                    className="border-t border-gray-200 p-2"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") onSend(); }}
+                        placeholder="Type a message…"
+                        className="flex-1 text-sm px-3 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <button
+                        onClick={onSend}
+                        className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white"
+                        title="Send"
+                      >
+                        <Send className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </>
   );
-};
-
-const MessageBubble: React.FC<{ message: any; isLatest?: boolean }> = ({ message, isLatest }) => {
-  const isUser = message.sender === 'user';
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="group"
-    >
-      <div className="flex items-start gap-3">
-        <div className={clsx(
-          'flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold',
-          isUser 
-            ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white' 
-            : 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white'
-        )}>
-          {isUser ? '👤' : <Brain className="w-4 h-4" />}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-sm font-semibold text-gray-900">
-              {isUser ? 'You' : 'Durmah'}
-            </span>
-          </div>
-          
-          <div className={clsx(
-            'text-gray-800 text-sm leading-relaxed'
-          )}>
-            <div className="whitespace-pre-wrap break-words">
-              {message.text}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 mt-2 text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span>
-              {new Date(message.timestamp).toLocaleTimeString([], { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-              })}
-            </span>
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  );
-};
-
-const VoiceInput: React.FC<{
-  isListening: boolean;
-  isSpeaking: boolean;
-  isConnected: boolean;
-  onToggleVoice: () => void;
-}> = ({ isListening, isSpeaking, isConnected, onToggleVoice }) => {
-  return (
-    <div className="px-6 py-4">
-      <div className="flex items-center justify-center">
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={onToggleVoice}
-          disabled={!isConnected}
-          className={clsx(
-            'relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 focus:outline-none focus:ring-4',
-            isListening 
-              ? 'bg-green-500 text-white focus:ring-green-300 shadow-lg shadow-green-500/30' 
-              : isSpeaking
-              ? 'bg-blue-500 text-white focus:ring-blue-300 shadow-lg shadow-blue-500/30'
-              : isConnected
-              ? 'bg-purple-600 text-white focus:ring-purple-300 hover:bg-purple-700 shadow-lg shadow-purple-600/30'
-              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-          )}
-        >
-          {isListening ? (
-            <>
-              <Mic className="w-6 h-6" />
-              <div className="absolute inset-0 rounded-full bg-white/20 animate-ping" />
-            </>
-          ) : isSpeaking ? (
-            <>
-              <Volume2 className="w-6 h-6 animate-pulse" />
-              <div className="absolute inset-0 rounded-full bg-white/20 animate-pulse" />
-            </>
-          ) : (
-            <Mic className="w-6 h-6" />
-          )}
-        </motion.button>
-      </div>
-      
-      <div className="text-center mt-3">
-        <p className="text-sm font-medium text-gray-700">
-          {isListening 
-            ? 'Listening...' 
-            : isSpeaking 
-            ? 'Speaking...'
-            : isConnected 
-            ? 'Click to speak'
-            : 'Connecting...'}
-        </p>
-      </div>
-    </div>
-  );
-};
-
-const ModernTextInput: React.FC<{ 
-  onSendMessage: (t: string) => void; 
-  disabled: boolean;
-}> = ({ onSendMessage, disabled }) => {
-  const [text, setText] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const send = () => {
-    if (disabled) return;
-    const v = text.trim();
-    if (!v) return;
-    onSendMessage(v);
-    setText('');
-  };
-
-  const adjustTextareaHeight = () => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-    }
-  };
-
-  useEffect(() => {
-    adjustTextareaHeight();
-  }, [text]);
-
-  return (
-    <div className="px-6 py-4">
-      <div className="flex items-end gap-3 bg-white rounded-2xl border border-gray-200 shadow-sm focus-within:border-purple-300 focus-within:shadow-md transition-all duration-200">
-        <div className="flex-1 min-h-0">
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Type your message..."
-            disabled={disabled}
-            rows={1}
-            className="w-full p-4 text-sm resize-none focus:outline-none disabled:bg-gray-50 disabled:cursor-not-allowed placeholder-gray-400"
-            style={{ minHeight: '52px', maxHeight: '120px' }}
-          />
-        </div>
-        
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={send}
-          disabled={disabled || !text.trim()}
-          className={clsx(
-            'flex-shrink-0 w-10 h-10 m-1 rounded-xl flex items-center justify-center transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-300',
-            text.trim() && !disabled
-              ? 'bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-600/30'
-              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-          )}
-          title="Send message"
-        >
-          <Send className="w-4 h-4" />
-        </motion.button>
-      </div>
-    </div>
-  );
-};
-
-export default DurmahWidget;
+}
