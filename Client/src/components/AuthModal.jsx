@@ -1,83 +1,13 @@
-// Client/src/components/AuthModal.jsx - Authentication modal for Supabase
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, Mail, Lock, User, Eye, EyeOff, Loader } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
-import toast from 'react-hot-toast';
+// Client/src/components/AuthModal.jsx – Google OAuth-only Login
+import React from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { X } from 'lucide-react';
+import { supabase } from '../contexts/AuthContext';
 
 const AuthModal = ({ isOpen, onClose }) => {
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [formData, setFormData] = useState({
-    email: '',
-    password: '',
-    confirmPassword: '',
-    displayName: '',
-    course: 'Law',
-    year: 1
-  });
-
-  const { signIn, signUp } = useAuth();
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setIsLoading(true);
-
-    try {
-      if (isSignUp) {
-        // Validate passwords match
-        if (formData.password !== formData.confirmPassword) {
-          toast.error('Passwords do not match');
-          return;
-        }
-
-        if (formData.password.length < 6) {
-          toast.error('Password must be at least 6 characters');
-          return;
-        }
-
-        const { error } = await signUp({
-          email: formData.email,
-          password: formData.password,
-          displayName: formData.displayName,
-          course: formData.course,
-          year: parseInt(formData.year),
-          university: 'Durham University'
-        });
-
-        if (error) {
-          toast.error(error.message);
-        } else {
-          toast.success('Account created! Please check your email to verify.');
-          onClose();
-        }
-      } else {
-        const { error } = await signIn({
-          email: formData.email,
-          password: formData.password
-        });
-
-        if (error) {
-          toast.error(error.message);
-        } else {
-          toast.success('Welcome back!');
-          onClose();
-        }
-      }
-    } catch (error) {
-      toast.error('An unexpected error occurred');
-      console.error('Auth error:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleInputChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
+  const handleGoogleLogin = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({ provider: 'google' });
+    if (error) console.error('Google login error:', error.message);
   };
 
   if (!isOpen) return null;
@@ -91,15 +21,10 @@ const AuthModal = ({ isOpen, onClose }) => {
           exit={{ scale: 0.95, opacity: 0 }}
           className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
         >
-          {/* Header */}
           <div className="flex items-center justify-between p-6 border-b">
             <div>
-              <h2 className="text-2xl font-bold text-gray-900">
-                {isSignUp ? 'Create Account' : 'Welcome Back'}
-              </h2>
-              <p className="text-sm text-gray-600">
-                {isSignUp ? 'Join Durham Law students' : 'Sign in to continue'}
-              </p>
+              <h2 className="text-2xl font-bold text-gray-900">Sign In</h2>
+              <p className="text-sm text-gray-600">Use your Durham email to continue</p>
             </div>
             <button
               onClick={onClose}
@@ -109,171 +34,20 @@ const AuthModal = ({ isOpen, onClose }) => {
             </button>
           </div>
 
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="p-6 space-y-4">
-            {/* Display Name (Sign Up Only) */}
-            {isSignUp && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Display Name
-                </label>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                  <input
-                    type="text"
-                    name="displayName"
-                    value={formData.displayName}
-                    onChange={handleInputChange}
-                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                    placeholder="Your name (e.g. Priya)"
-                    required={isSignUp}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Email */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Email Address
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input
-                  type="email"
-                  name="email"
-                  value={formData.email}
-                  onChange={handleInputChange}
-                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                  placeholder="student@durham.ac.uk"
-                  required
-                />
-              </div>
-            </div>
-
-            {/* Course and Year (Sign Up Only) */}
-            {isSignUp && (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Course
-                  </label>
-                  <select
-                    name="course"
-                    value={formData.course}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                  >
-                    <option value="Law">Law</option>
-                    <option value="Law with European Study">Law with European Study</option>
-                    <option value="Criminology">Criminology</option>
-                    <option value="Philosophy & Politics">Philosophy & Politics</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Year
-                  </label>
-                  <select
-                    name="year"
-                    value={formData.year}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                  >
-                    <option value={1}>1st Year</option>
-                    <option value={2}>2nd Year</option>
-                    <option value={3}>3rd Year</option>
-                    <option value={4}>4th Year</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {/* Password */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Password
-              </label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  name="password"
-                  value={formData.password}
-                  onChange={handleInputChange}
-                  className="w-full pl-10 pr-12 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                  placeholder="Enter your password"
-                  required
-                  minLength={6}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Confirm Password (Sign Up Only) */}
-            {isSignUp && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Confirm Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    name="confirmPassword"
-                    value={formData.confirmPassword}
-                    onChange={handleInputChange}
-                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                    placeholder="Confirm your password"
-                    required={isSignUp}
-                    minLength={6}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Durham Email Notice */}
-            {isSignUp && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <p className="text-sm text-blue-800">
-                  💡 <strong>Tip:</strong> Use your @durham.ac.uk email to automatically enable voice features!
-                </p>
-              </div>
-            )}
-
-            {/* Submit Button */}
+          <div className="p-6">
             <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full bg-purple-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
+              onClick={handleGoogleLogin}
+              className="w-full bg-red-500 hover:bg-red-600 text-white py-3 px-4 rounded-lg font-medium transition-colors flex items-center justify-center"
             >
-              {isLoading ? (
-                <Loader className="w-5 h-5 animate-spin" />
-              ) : (
-                isSignUp ? 'Create Account' : 'Sign In'
-              )}
+              <svg className="w-5 h-5 mr-3" viewBox="0 0 533.5 544.3" xmlns="http://www.w3.org/2000/svg">
+                <path fill="#4285F4" d="M533.5 278.4c0-17.4-1.4-34.1-4-50.4H272v95.4h146.9c-6.4 34-25.7 62.8-54.6 82.1v68h88.4c51.7-47.6 80.8-117.7 80.8-195.1z"/>
+                <path fill="#34A853" d="M272 544.3c73.5 0 135-24.4 179.9-66.1l-88.4-68c-24.5 16.4-55.8 26-91.5 26-70.3 0-129.9-47.5-151.3-111.1H29.6v69.6C73.4 482.6 166.5 544.3 272 544.3z"/>
+                <path fill="#FBBC04" d="M120.7 324.6c-10.2-30.2-10.2-62.7 0-92.9V162h-91v69.6c-19.7 38.6-19.7 85.6 0 124.2l91-69.2z"/>
+                <path fill="#EA4335" d="M272 107.7c39.9-.6 77.7 14 106.7 40.5l80-80C418.2 25.7 346.3 0 272 0 166.5 0 73.4 61.7 29.6 162l91 69.6c21.4-63.6 81-111.1 151.4-111.1z"/>
+              </svg>
+              Continue with Google
             </button>
-
-            {/* Toggle Auth Mode */}
-            <div className="text-center pt-4 border-t">
-              <p className="text-sm text-gray-600">
-                {isSignUp ? 'Already have an account?' : "Don't have an account?"}
-                <button
-                  type="button"
-                  onClick={() => setIsSignUp(!isSignUp)}
-                  className="ml-2 text-purple-600 hover:text-purple-700 font-medium"
-                >
-                  {isSignUp ? 'Sign In' : 'Sign Up'}
-                </button>
-              </p>
-            </div>
-          </form>
+          </div>
         </motion.div>
       </div>
     </AnimatePresence>

@@ -103,44 +103,14 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  // Sign in with email and password
-  const signIn = async (credentials) => {
+  // Google OAuth sign in (primary method)
+  const signInWithGoogle = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: credentials.email,
-        password: credentials.password,
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      return { user: data.user, session: data.session, error: null };
-    } catch (error) {
-      console.error('Sign in error:', error);
-      return { user: null, session: null, error };
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Sign up with email and password
-  const signUp = async (credentials) => {
-    try {
-      setLoading(true);
-      const { data, error } = await supabase.auth.signUp({
-        email: credentials.email,
-        password: credentials.password,
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
         options: {
-          data: {
-            display_name: credentials.name || credentials.displayName,
-            full_name: credentials.fullName,
-            university: credentials.university || 'Durham University',
-            course: credentials.course,
-            year: credentials.year,
-            voice_enabled: credentials.email?.endsWith('@durham.ac.uk') || false
-          }
+          redirectTo: window.location.origin
         }
       });
 
@@ -148,10 +118,10 @@ export const AuthProvider = ({ children }) => {
         throw error;
       }
 
-      return { user: data.user, session: data.session, error: null };
+      return { error: null };
     } catch (error) {
-      console.error('Sign up error:', error);
-      return { user: null, session: null, error };
+      console.error('Google sign in error:', error);
+      return { error };
     } finally {
       setLoading(false);
     }
@@ -176,23 +146,6 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Reset password
-  const resetPassword = async (email) => {
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      return { error: null };
-    } catch (error) {
-      console.error('Reset password error:', error);
-      return { error };
-    }
-  };
 
   // Update user profile
   const updateProfile = async (updates) => {
@@ -253,10 +206,8 @@ export const AuthProvider = ({ children }) => {
     user: enhancedUser,
     session,
     loading,
-    signIn,
+    signInWithGoogle,
     signOut,
-    signUp,
-    resetPassword,
     updateProfile,
     getUserProfile,
     

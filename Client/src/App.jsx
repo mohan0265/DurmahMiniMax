@@ -1,6 +1,6 @@
 // Client/src/App.jsx - Main app component for voice loop with real auth
-import React, { useState } from 'react'
-import { AuthProvider, useAuth } from './contexts/AuthContext'
+import React, { useState, useEffect } from 'react'
+import { AuthProvider, useAuth, supabase } from './contexts/AuthContext'
 import { VoiceModeProvider } from './contexts/VoiceModeContext'
 import DurmahWidget from './components/DurmahWidget'
 import AuthModal from './components/AuthModal'
@@ -12,6 +12,15 @@ function AppContent() {
   const [showSettings, setShowSettings] = useState(false)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const { user, loading, signOut, displayName, isAuthenticated, hasVoiceAccess } = useAuth()
+
+  // Google auto-redirect fallback for unauthenticated users
+  useEffect(() => {
+    if (!loading && !user) {
+      // Optional: Auto-redirect to Google OAuth
+      // Uncomment the line below to enable automatic Google login
+      // supabase.auth.signInWithOAuth({ provider: 'google' });
+    }
+  }, [user, loading])
   
   const handleSignOut = async () => {
     try {
