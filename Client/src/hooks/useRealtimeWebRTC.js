@@ -1,20 +1,28 @@
-// [GEMINI PATCH] Inserted by Gemini on 25 Aug for mic initialization and endpoint debugging
-import { useCallback, useRef, useState } from "react";
+// Fixed Real-time Voice Hook using WebSocket connection
+import { useCallback, useRef, useState, useEffect } from "react";
 import toast from 'react-hot-toast';
+import TTSManager from '../lib/voice/tts.js';
+import TranscriptionManager from '../lib/voice/transcribe.js';
 
-// [GEMINI PATCH] Added console.log to debug Vite environment variable injection.
-console.log("[Debug] VITE_SESSION_ENDPOINT at runtime:", import.meta.env.VITE_SESSION_ENDPOINT);
+// Get WebSocket endpoint for voice service
+function getVoiceWebSocketEndpoint() {
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+  const wsUrl = baseUrl.replace('http://', 'ws://').replace('https://', 'wss://');
+  return `${wsUrl}/voice`;
+}
 
-function getAbsoluteEndpoint() {
-  const endpoint = import.meta.env.VITE_SESSION_ENDPOINT;
+// Random warm greetings
+const WARM_GREETINGS = [
+  "Hi there! I'm Durmah, ready to support your legal journey.",
+  "Hey! Ask me anything — I'm always around to help!",
+  "Welcome back! Let's tackle those legal topics together.",
+  "Hi! I'm Durmah, your Legal Eagle Buddy. You can speak to me now — ask me anything about your modules, case prep, or just say hi!",
+  "Hello! Ready to dive into some legal learning together?",
+  "Hey there! I'm here to help with all your legal studies. What's on your mind?"
+];
 
-  if (!endpoint || !endpoint.startsWith("http")) {
-    console.error("[Durmah][FATAL] VITE_SESSION_ENDPOINT is not valid:", endpoint);
-    toast.error("Voice mode unavailable. Please try again later.");
-    throw new Error("VITE_SESSION_ENDPOINT is not a valid absolute URL.");
-  }
-  
-  return endpoint;
+function getRandomGreeting() {
+  return WARM_GREETINGS[Math.floor(Math.random() * WARM_GREETINGS.length)];
 }
 
 export function useRealtimeWebRTC() {
@@ -27,6 +35,7 @@ export function useRealtimeWebRTC() {
   const [error, setError] = useState(null);
   const [conversationHistory, setConversationHistory] = useState([]);
   const [partialTranscript, setPartialTranscript] = useState("");
+  const [hasGreeted, setHasGreeted] = useState(false);
   
   const [voiceSettings, setVoiceSettings] = useState({
     inputGain: 1.0,
@@ -35,16 +44,61 @@ export function useRealtimeWebRTC() {
     noiseSuppression: true
   });
 
-  const pcRef = useRef(null);
-  const micRef = useRef(null);
-  const remoteAudioRef = useRef(typeof Audio !== "undefined" ? new Audio() : null);
+  // WebSocket and audio processing refs
+  const wsRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const audioProcessorRef = useRef(null);
+  const ttsManagerRef = useRef(null);
+  const transcriptionManagerRef = useRef(null);
 
-  if (remoteAudioRef.current) {
-    remoteAudioRef.current.autoplay = true;
-    remoteAudioRef.current.playsInline = true;
-  }
+  // Initialize managers
+  useEffect(() => {
+    ttsManagerRef.current = new TTSManager();
+    transcriptionManagerRef.current = new TranscriptionManager();
 
-  const addMessage = (sender, text, type = 'text') => {
+    // Set up TTS callbacks
+    ttsManagerRef.current.onSpeakingStart = () => {
+      console.log('[TTS] Speaking started');
+      setIsSpeaking(true);
+      setIsThinking(false);
+    };
+
+    ttsManagerRef.current.onSpeakingEnd = () => {
+      console.log('[TTS] Speaking ended');
+      setIsSpeaking(false);
+    };
+
+    // Set up transcription callbacks
+    transcriptionManagerRef.current.onSpeechStart = () => {
+      console.log('[Transcription] Speech detected');
+      setIsListening(true);
+      setPartialTranscript('');
+    };
+
+    transcriptionManagerRef.current.onSpeechEnd = () => {
+      console.log('[Transcription] Speech ended');
+      setIsListening(false);
+    };
+
+    transcriptionManagerRef.current.onPartialTranscript = (transcript) => {
+      console.log('[Transcription] Partial:', transcript);
+      setPartialTranscript(transcript);
+    };
+
+    transcriptionManagerRef.current.onTranscript = (transcript) => {
+      console.log('[Transcription] Final:', transcript);
+      setPartialTranscript('');
+      addMessage('user', transcript, 'voice');
+    };
+
+    return () => {
+      // Cleanup
+      if (ttsManagerRef.current) ttsManagerRef.current.stop();
+    };
+  }, [])
+
+  const addMessage = useCallback((sender, text, type = 'text') => {
     const message = {
       id: Date.now() + Math.random(),
       sender,
@@ -52,160 +106,351 @@ export function useRealtimeWebRTC() {
       type,
       timestamp: new Date().toISOString()
     };
+    console.log('[Message]', sender, ':', text);
     setConversationHistory(prev => [...prev, message]);
-  };
+  }, []);
+
+  const initializeAudioCapture = useCallback(async () => {
+    try {
+      console.log('[Audio] Requesting microphone access...');
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { 
+          echoCancellation: voiceSettings.echoCancellation,
+          noiseSuppression: voiceSettings.noiseSuppression,
+          autoGainControl: true,
+          sampleRate: 24000
+        } 
+      });
+      
+      mediaStreamRef.current = stream;
+      
+      // Create audio context for processing
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 24000
+      });
+      
+      // Resume if suspended (autoplay policy)
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+      
+      // Set up audio processing for real-time capture
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+      
+      processor.onaudioprocess = (event) => {
+        if (voiceModeActive && wsRef.current?.readyState === WebSocket.OPEN) {
+          const inputBuffer = event.inputBuffer.getChannelData(0);
+          
+          // Convert to PCM16 and send to server
+          const pcm16Buffer = new Int16Array(inputBuffer.length);
+          for (let i = 0; i < inputBuffer.length; i++) {
+            pcm16Buffer[i] = Math.max(-32768, Math.min(32767, inputBuffer[i] * 32767));
+          }
+          
+          // Convert to base64 for transmission
+          const pcm16Base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16Buffer.buffer)));
+          
+          wsRef.current.send(JSON.stringify({
+            type: 'input_audio_buffer.append',
+            audio: pcm16Base64
+          }));
+        }
+      };
+      
+      source.connect(processor);
+      processor.connect(audioContextRef.current.destination);
+      audioProcessorRef.current = processor;
+      
+      console.log('[Audio] Microphone initialized successfully');
+      return true;
+      
+    } catch (error) {
+      console.error('[Audio] Failed to initialize microphone:', error);
+      setError(`Microphone access failed: ${error.message}`);
+      toast.error('Microphone access denied. Please enable microphone permissions.');
+      return false;
+    }
+  }, [voiceSettings, voiceModeActive]);
 
   const connect = useCallback(async () => {
     if (isConnecting || isConnected) return true;
     
     setError(null);
     setIsConnecting(true);
-    console.log("[Durmah] Attempting to connect...");
+    console.log("[Durmah] Connecting to voice service...");
 
     try {
-      const endpoint = getAbsoluteEndpoint();
-      console.log("[RTC] connect → endpoint", endpoint);
+      const wsEndpoint = getVoiceWebSocketEndpoint();
+      console.log("[WebSocket] Connecting to:", wsEndpoint);
+      
+      const ws = new WebSocket(wsEndpoint);
+      wsRef.current = ws;
+      
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          ws.close();
+          reject(new Error('Connection timeout'));
+        }, 10000);
 
-      console.log("[Durmah] Requesting microphone permission...");
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log("[Durmah] Microphone access granted.");
-      micRef.current = micStream;
+        ws.onopen = async () => {
+          clearTimeout(timeout);
+          console.log('[WebSocket] Connected successfully');
+          setIsConnected(true);
+          setIsConnecting(false);
+          
+          // Show warm greeting
+          if (!hasGreeted) {
+            const greeting = getRandomGreeting();
+            addMessage('durmah', greeting, 'voice');
+            setHasGreeted(true);
+          }
+          
+          resolve(true);
+        };
 
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            handleWebSocketMessage(message);
+          } catch (error) {
+            console.error('[WebSocket] Failed to parse message:', error);
+          }
+        };
+
+        ws.onclose = (event) => {
+          console.log('[WebSocket] Connection closed:', event.code, event.reason);
+          setIsConnected(false);
+          setVoiceModeActive(false);
+          setIsListening(false);
+          setIsSpeaking(false);
+          setIsThinking(false);
+          wsRef.current = null;
+          
+          if (!event.wasClean) {
+            setError('Connection lost. Click to reconnect.');
+            toast.error('Connection lost. Please try again.');
+          }
+        };
+
+        ws.onerror = (error) => {
+          clearTimeout(timeout);
+          console.error('[WebSocket] Connection error:', error);
+          setError('Failed to connect to voice service');
+          toast.error('Failed to connect. Please check your connection.');
+          setIsConnecting(false);
+          reject(error);
+        };
       });
-      pcRef.current = pc;
 
-      pc.onconnectionstatechange = () => {
-        console.log("[RTC] state:", pc.connectionState);
-        setIsConnected(pc.connectionState === "connected");
-        if (pc.connectionState === 'failed') {
-            setError("WebRTC connection failed.");
-            toast.error("Connection failed. Please try again.");
-        }
-      };
-
-      pc.ontrack = (ev) => {
-        console.log("[RTC] remote track received");
-        if (remoteAudioRef.current && ev.streams && ev.streams[0]) {
-          remoteAudioRef.current.srcObject = ev.streams[0];
-          remoteAudioRef.current.play().catch(e => console.warn("[Durmah] Autoplay was blocked by browser", e));
-        }
-      };
-
-      pc.ondatachannel = (event) => {
-        const channel = event.channel;
-        if (channel.label === "transcript") {
-          channel.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === 'partial') {
-              setPartialTranscript(data.transcript);
-            } else if (data.type === 'final') {
-              setPartialTranscript("");
-              addMessage('durmah', data.transcript, 'voice');
-            }
-          };
-        }
-      };
-
-      micStream.getTracks().forEach((track) => pc.addTrack(track, micStream));
-      console.log("[RTC] mic tracks added to peer connection.");
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/sdp" },
-        body: offer.sdp,
-      });
-
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "Server error with no message");
-        throw new Error(`SDP exchange failed: ${res.status} ${txt}`);
-      }
-
-      const answerSdp = await res.text();
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-
-      console.log("[RTC] Connected successfully (SDP answer received).");
-      setIsConnected(true);
-      addMessage('durmah', 'Connected! I can hear you now. How can I help with your legal studies?', 'voice');
-      return true;
-
-    } catch (e) {
-      console.error("[Durmah] Connection or microphone access failed:", e);
-      setError(e.message || String(e));
-      toast.error("Microphone access denied or not supported in this browser.");
-      return false;
-    } finally {
+    } catch (error) {
+      console.error("[Durmah] Connection failed:", error);
+      setError(error.message);
       setIsConnecting(false);
+      toast.error("Failed to connect to voice service.");
+      return false;
     }
-  }, [isConnecting, isConnected]);
+  }, [isConnecting, isConnected, hasGreeted, addMessage]);
+
+  const handleWebSocketMessage = useCallback((message) => {
+    console.log('[WebSocket] Received:', message.type);
+    
+    switch (message.type) {
+      case 'durmah.ready':
+        console.log('[Durmah] Service ready');
+        break;
+        
+      case 'input_audio_buffer.speech_started':
+        transcriptionManagerRef.current?.handleTranscriptionEvent(message);
+        setIsListening(true);
+        break;
+        
+      case 'input_audio_buffer.speech_stopped':
+        transcriptionManagerRef.current?.handleTranscriptionEvent(message);
+        setIsListening(false);
+        setIsThinking(true);
+        break;
+        
+      case 'conversation.item.input_audio_transcription.completed':
+        transcriptionManagerRef.current?.handleTranscriptionEvent({
+          type: message.type,
+          transcript: message.transcript
+        });
+        break;
+        
+      case 'audio_chunk':
+        if (message.pcm16 && ttsManagerRef.current) {
+          ttsManagerRef.current.queueAndPlayAudio(message.pcm16, message.sampleRate || 24000);
+        }
+        break;
+        
+      case 'audio_end':
+        setIsThinking(false);
+        // Audio playback will end naturally
+        break;
+        
+      case 'transcript':
+        setIsThinking(false);
+        addMessage('durmah', message.text, 'voice');
+        break;
+        
+      case 'response.done':
+        setIsThinking(false);
+        console.log('[Response] Complete');
+        break;
+        
+      case 'error':
+        console.error('[WebSocket] Service error:', message.message);
+        setError(message.message);
+        toast.error(`Voice service error: ${message.message}`);
+        break;
+        
+      default:
+        console.log('[WebSocket] Unhandled message type:', message.type);
+    }
+  }, [addMessage]);
 
   const disconnect = useCallback(async () => {
     try {
-      console.log("[RTC] disconnecting");
+      console.log("[Voice] Disconnecting...");
       setVoiceModeActive(false);
       setIsListening(false);
       setIsSpeaking(false);
       setIsThinking(false);
       
-      if (pcRef.current) { 
-        pcRef.current.close(); 
-        pcRef.current = null; 
+      // Close WebSocket
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
-      if (micRef.current) { 
-        micRef.current.getTracks().forEach((t) => t.stop()); 
-        micRef.current = null; 
+      
+      // Stop audio capture
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
       }
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.pause();
-        remoteAudioRef.current.srcObject = null;
+      
+      // Close audio context
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+      
+      // Stop audio processor
+      if (audioProcessorRef.current) {
+        audioProcessorRef.current.disconnect();
+        audioProcessorRef.current = null;
+      }
+      
+      // Stop TTS
+      if (ttsManagerRef.current) {
+        ttsManagerRef.current.stop();
       }
       
       setIsConnected(false);
       setIsConnecting(false);
       setError(null);
       
-      addMessage('durmah', 'Disconnected. Click to reconnect anytime!', 'text');
+      console.log("[Voice] Disconnected successfully");
     } catch (e) {
-      console.warn("[RTC] disconnect error", e);
+      console.warn("[Voice] Disconnect error:", e);
     }
   }, []);
 
   const startVoiceMode = useCallback(async () => {
     if (!isConnected) {
-        const connected = await connect();
-        if (!connected) {
-            setVoiceModeActive(false);
-            return false;
-        }
+      const connected = await connect();
+      if (!connected) {
+        setVoiceModeActive(false);
+        return false;
+      }
     }
-    console.log("[RTC] starting voice mode");
-    setIsListening(true);
+    
+    console.log("[Voice] Starting voice mode...");
+    
+    // Initialize audio capture
+    const audioInitialized = await initializeAudioCapture();
+    if (!audioInitialized) {
+      setVoiceModeActive(false);
+      return false;
+    }
+    
     setVoiceModeActive(true);
+    console.log("[Voice] Voice mode activated successfully");
+    
     return true;
-  }, [isConnected, connect]);
+  }, [isConnected, connect, initializeAudioCapture]);
 
   const stopVoiceMode = useCallback(async () => {
-    console.log("[RTC] stopping voice mode");
-    setIsListening(false);
+    console.log("[Voice] Stopping voice mode...");
     setVoiceModeActive(false);
-    addMessage('durmah', 'Voice mode stopped. You can start again anytime!', 'text');
+    setIsListening(false);
+    setIsSpeaking(false);
+    setIsThinking(false);
+    
+    // Stop audio capture
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    
+    // Close audio context
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    
+    // Stop audio processor
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect();
+      audioProcessorRef.current = null;
+    }
+    
+    console.log("[Voice] Voice mode stopped");
   }, []);
 
   const sendTextMessage = useCallback((text) => {
     if (!text.trim()) return;
+    
+    // Don't send text messages when in active voice mode
+    if (voiceModeActive) {
+      toast('Please stop voice mode to send text messages', {
+        icon: '🎤',
+        duration: 2000
+      });
+      return;
+    }
+    
     addMessage('user', text, 'text');
-    setTimeout(() => {
-      addMessage('durmah', `I received your message: "${text}". This is a simulated text response. Try voice mode for real-time conversation!`, 'text');
-    }, 500);
-  }, []);
+    
+    // Send text message to WebSocket if connected
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text }]
+        }
+      }));
+      
+      // Trigger response
+      wsRef.current.send(JSON.stringify({
+        type: 'response.create'
+      }));
+    } else {
+      // Fallback response if not connected
+      setTimeout(() => {
+        addMessage('durmah', `I received your message: "${text}". Please connect to voice mode for real-time conversation!`, 'text');
+      }, 500);
+    }
+  }, [voiceModeActive, addMessage]);
 
   const clearConversation = useCallback(() => {
     setConversationHistory([]);
-    console.log('[RTC] conversation cleared');
+    setPartialTranscript('');
+    setHasGreeted(false);
+    console.log('[Voice] Conversation cleared');
   }, []);
 
   return {
