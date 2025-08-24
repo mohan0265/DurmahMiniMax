@@ -12,7 +12,8 @@ export const useRealtimeVoice = () => {
     conversationHistory,
     sendTextMessage,
     clearConversation,
-    error
+    error,
+    partialTranscript
   } = useRealtimeWebRTC();
 
   return {
@@ -25,6 +26,7 @@ export const useRealtimeVoice = () => {
     conversationHistory,
     sendTextMessage,
     clearConversation,
-    error
+    error,
+    partialTranscript
   };
 };

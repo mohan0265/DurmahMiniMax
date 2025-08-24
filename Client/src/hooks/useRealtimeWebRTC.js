@@ -26,6 +26,7 @@ export function useRealtimeWebRTC() {
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const [error, setError] = useState(null);
   const [conversationHistory, setConversationHistory] = useState([]);
+  const [partialTranscript, setPartialTranscript] = useState("");
   
   const [voiceSettings, setVoiceSettings] = useState({
     inputGain: 1.0,
@@ -89,6 +90,21 @@ export function useRealtimeWebRTC() {
         if (remoteAudioRef.current && ev.streams && ev.streams[0]) {
           remoteAudioRef.current.srcObject = ev.streams[0];
           remoteAudioRef.current.play().catch(e => console.warn("[Durmah] Autoplay was blocked by browser", e));
+        }
+      };
+
+      pc.ondatachannel = (event) => {
+        const channel = event.channel;
+        if (channel.label === "transcript") {
+          channel.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'partial') {
+              setPartialTranscript(data.transcript);
+            } else if (data.type === 'final') {
+              setPartialTranscript("");
+              addMessage('durmah', data.transcript, 'voice');
+            }
+          };
         }
       };
 
@@ -200,6 +216,7 @@ export function useRealtimeWebRTC() {
     isThinking,
     voiceModeActive,
     conversationHistory,
+    partialTranscript,
     error,
     connectionError: error,
     voiceSettings,
