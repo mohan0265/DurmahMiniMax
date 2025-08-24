@@ -178,6 +178,46 @@ export function useRealtimeWebRTC() {
       micStreamRef.current = stream;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       setIsListening(true);
+// After:
+//   micStreamRef.current = stream;
+//   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+//   setIsListening(true);
+
+// ADD this block:
+try {
+  const ACtx = window.AudioContext || window.webkitAudioContext;
+  if (ACtx) {
+    const ctx = new ACtx();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    src.connect(analyser);
+
+    let speaking = false;
+    const tick = () => {
+      analyser.getByteTimeDomainData(data);
+      let maxDev = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.abs(data[i] - 128);
+        if (v > maxDev) maxDev = v;
+      }
+      const nowSpeaking = maxDev > 10;
+
+      // rising edge = you started talking -> cancel current TTS immediately
+      if (!speaking && nowSpeaking && sendDCRef.current && sendDCRef.current.readyState === "open") {
+        try {
+          sendDCRef.current.send(JSON.stringify({ type: "response.cancel" }));
+        } catch {}
+      }
+      speaking = nowSpeaking;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+} catch {}
+
+
 
       // 6) Offer/Answer via OpenAI Realtime
       const offer = await pc.createOffer();

@@ -1,11 +1,7 @@
 // /netlify/functions/realtime-session.js
-// Netlify Function: issues an ephemeral Realtime session token for the browser.
-// Requires env: OPENAI_API_KEY
-// Optional env: REALTIME_MODEL (default: gpt-4o-realtime-preview-2024-12-17)
-//               REALTIME_VOICE (default: "verse")
+// Issues ephemeral token with tuned turn-detection (server VAD) and persona instructions.
 
 export async function handler(event, _context) {
-  // Basic CORS
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
@@ -21,19 +17,32 @@ export async function handler(event, _context) {
   try {
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     if (!OPENAI_API_KEY) {
-      return {
-        statusCode: 500,
-        headers: corsHeaders,
-        body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }),
-      };
+      return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: "Missing OPENAI_API_KEY" }) };
     }
 
-    const { model: bodyModel, voice: bodyVoice } = JSON.parse(event.body || "{}");
-    const model =
-      bodyModel || process.env.REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17";
-    const voice = bodyVoice || process.env.REALTIME_VOICE || "verse";
+    const body = JSON.parse(event.body || "{}");
+    const model = body.model || process.env.REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+    const voice = body.voice || process.env.REALTIME_VOICE || "verse"; // good natural voice
 
-    // Create a short-lived client_secret for the browser
+    // ✅ Persona: sound like a helpful legal buddy (don’t reflexively deflect)
+    const instructions = `
+You are Durmah Legal Buddy, a friendly, concise assistant for general legal guidance in Singapore.
+Speak naturally and conversationally, in short sentences. Offer practical next steps, plain-language explanations,
+and helpful context. Avoid fear-mongering. If a question requires a licensed lawyer, say so briefly and still give
+actionable, educational guidance first (what to ask, what to prepare). Do not say "I cannot help" unless safety requires it.
+`;
+
+    // ✅ Faster turn-taking with server VAD (lower silence + modest sensitivity)
+    const turn_detection = {
+      type: "server_vad",
+      // Lower = more sensitive to speech start; tune between 0.3–0.6
+      threshold: 0.45,
+      // Keep a little pre-roll so replies sound snappy
+      prefix_padding_ms: 200,
+      // How long of silence before cutting off your turn
+      silence_duration_ms: 450,
+    };
+
     const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
@@ -43,24 +52,20 @@ export async function handler(event, _context) {
       },
       body: JSON.stringify({
         model,
-        voice,                  // TTS voice to use for the remote audio track
-        modalities: ["text","audio"],
-        // You can tweak config below as needed:
-        // "input_audio_format": { "type": "webrtc" },
+        voice,
+        modalities: ["text", "audio"],
+        input_audio_format: { type: "webrtc" },
+        instructions,
+        turn_detection,
       }),
     });
 
     if (!resp.ok) {
       const text = await resp.text();
-      return {
-        statusCode: resp.status,
-        headers: corsHeaders,
-        body: JSON.stringify({ error: "OpenAI session create failed", detail: text }),
-      };
+      return { statusCode: resp.status, headers: corsHeaders, body: JSON.stringify({ error: "OpenAI session create failed", detail: text }) };
     }
 
     const json = await resp.json();
-    // json.client_secret.value is the ephemeral token the browser will use
     return {
       statusCode: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -72,10 +77,6 @@ export async function handler(event, _context) {
       }),
     };
   } catch (err) {
-    return {
-      statusCode: 500,
-      headers: corsHeaders,
-      body: JSON.stringify({ error: "Server error", detail: String(err) }),
-    };
+    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: "Server error", detail: String(err) }) };
   }
 }
