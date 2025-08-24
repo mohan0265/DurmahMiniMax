@@ -34,8 +34,8 @@ Avoid saying "I cannot help" unless safety requires it.
 
     const turn_detection = {
       type: "server_vad",
-      threshold: 0.45,           // raise to 0.5 if it still jumps in too early
-      silence_duration_ms: 500,  // raise to 650 for longer wait before it replies
+      threshold: 0.50,           // raise to 0.5 if it still jumps in too early
+      silence_duration_ms: 700,  // raise to 650 for longer wait before it replies
       prefix_padding_ms: 200,
     };
 
