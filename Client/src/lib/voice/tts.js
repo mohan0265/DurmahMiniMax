@@ -10,12 +10,17 @@ export class TTSManager {
 
   async initialize() {
     if (!this.audioContext) {
-      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 24000
+      });
+      console.log('[TTS] Audio context created:', this.audioContext.state);
     }
     
     // Resume audio context if suspended (browser autoplay policy)
     if (this.audioContext.state === 'suspended') {
+      console.log('[TTS] Resuming suspended audio context...');
       await this.audioContext.resume();
+      console.log('[TTS] Audio context resumed:', this.audioContext.state);
     }
   }
 
@@ -23,6 +28,8 @@ export class TTSManager {
     await this.initialize();
     
     try {
+      console.log('[TTS] Playing PCM16 audio, length:', pcm16Base64.length, 'sampleRate:', sampleRate);
+      
       // Decode base64 PCM16 data
       const binaryString = atob(pcm16Base64);
       const bytes = new Uint8Array(binaryString.length);
@@ -38,6 +45,8 @@ export class TTSManager {
         floatData[i] = pcm16Data[i] / 32768.0; // Convert to -1.0 to 1.0 range
       }
       
+      console.log('[TTS] Decoded PCM16 samples:', floatData.length, 'duration:', floatData.length / sampleRate, 'seconds');
+      
       // Create audio buffer
       const audioBuffer = this.audioContext.createBuffer(1, floatData.length, sampleRate);
       audioBuffer.getChannelData(0).set(floatData);
@@ -46,7 +55,7 @@ export class TTSManager {
       await this.playAudioBuffer(audioBuffer);
       
     } catch (error) {
-      console.error('Error playing PCM16 audio:', error);
+      console.error('[TTS] Error playing PCM16 audio:', error);
       throw error;
     }
   }
@@ -54,6 +63,8 @@ export class TTSManager {
   async playAudioBuffer(audioBuffer) {
     return new Promise((resolve, reject) => {
       try {
+        console.log('[TTS] Creating audio source and playing buffer...');
+        
         const source = this.audioContext.createBufferSource();
         const gainNode = this.audioContext.createGain();
         
@@ -61,22 +72,35 @@ export class TTSManager {
         source.connect(gainNode);
         gainNode.connect(this.audioContext.destination);
         
-        // Set volume
-        gainNode.gain.setValueAtTime(0.8, this.audioContext.currentTime);
+        // Set volume - make it louder for better audibility
+        gainNode.gain.setValueAtTime(1.0, this.audioContext.currentTime);
         
         source.onended = () => {
+          console.log('[TTS] Audio playback ended');
+          this.isPlaying = false;
+          // Don't call onSpeakingEnd immediately - let queue process
+          if (this.audioQueue.length === 0 && this.onSpeakingEnd) {
+            this.onSpeakingEnd();
+          }
+          resolve();
+        };
+        
+        source.onerror = (error) => {
+          console.error('[TTS] Audio playback error:', error);
           this.isPlaying = false;
           if (this.onSpeakingEnd) this.onSpeakingEnd();
-          resolve();
+          reject(error);
         };
         
         // Start speaking callback
         this.isPlaying = true;
         if (this.onSpeakingStart) this.onSpeakingStart();
         
+        console.log('[TTS] Starting audio playback...');
         source.start(0);
         
       } catch (error) {
+        console.error('[TTS] Error in playAudioBuffer:', error);
         this.isPlaying = false;
         if (this.onSpeakingEnd) this.onSpeakingEnd();
         reject(error);
@@ -94,13 +118,22 @@ export class TTSManager {
   }
 
   async processAudioQueue() {
+    console.log('[TTS] Processing audio queue, items:', this.audioQueue.length);
+    
     while (this.audioQueue.length > 0) {
       const { pcm16Base64, sampleRate } = this.audioQueue.shift();
       try {
         await this.playPCM16Audio(pcm16Base64, sampleRate);
       } catch (error) {
-        console.error('Error processing audio queue:', error);
+        console.error('[TTS] Error processing audio queue:', error);
       }
+    }
+    
+    // Queue is empty, we're done speaking
+    console.log('[TTS] Audio queue processing complete');
+    this.isPlaying = false;
+    if (this.onSpeakingEnd) {
+      this.onSpeakingEnd();
     }
   }
 

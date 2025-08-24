@@ -11,18 +11,56 @@ function getVoiceWebSocketEndpoint() {
   return `${wsUrl}/voice`;
 }
 
-// Random warm greetings
-const WARM_GREETINGS = [
-  "Hi there! I'm Durmah, ready to support your legal journey.",
-  "Hey! Ask me anything — I'm always around to help!",
-  "Welcome back! Let's tackle those legal topics together.",
-  "Hi! I'm Durmah, your Legal Eagle Buddy. You can speak to me now — ask me anything about your modules, case prep, or just say hi!",
-  "Hello! Ready to dive into some legal learning together?",
-  "Hey there! I'm here to help with all your legal studies. What's on your mind?"
+// Natural voice greetings for TTS
+const VOICE_GREETINGS = [
+  "Hi there! I'm Durmah, your Legal Eagle Buddy. Welcome back! Just start speaking and I'll help you with any legal questions.",
+  "Hello! Great to see you again. I'm ready to assist with your legal studies. What would you like to discuss?",
+  "Welcome back to your legal assistant. I'm here to help with case analysis, legal research, or any questions you have. Just speak naturally.",
+  "Hi! I'm Durmah, ready to support your legal journey. Feel free to ask me about your modules, assignments, or any legal topics.",
+  "Hello there! Your legal assistant is ready. I can help with research, case preparation, or just chat about law. What's on your mind?",
+  "Welcome! I'm here to help with all your legal needs. Whether it's coursework, research, or general legal questions - just start talking!"
 ];
 
-function getRandomGreeting() {
-  return WARM_GREETINGS[Math.floor(Math.random() * WARM_GREETINGS.length)];
+function getRandomVoiceGreeting() {
+  return VOICE_GREETINGS[Math.floor(Math.random() * VOICE_GREETINGS.length)];
+}
+
+// Function to trigger TTS greeting
+async function playVoiceGreeting(ttsManager) {
+  const greeting = getRandomVoiceGreeting();
+  console.log('[Greeting] Playing voice greeting:', greeting);
+  
+  try {
+    // Send greeting text to TTS service or use ElevenLabs directly
+    // For now, we'll use browser speech synthesis as fallback
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(greeting);
+      utterance.rate = 0.9;
+      utterance.pitch = 1.1;
+      utterance.volume = 0.8;
+      
+      // Try to use a professional voice
+      const voices = speechSynthesis.getVoices();
+      const preferredVoice = voices.find(voice => 
+        voice.name.includes('Samantha') || 
+        voice.name.includes('Karen') || 
+        voice.name.includes('Daniel') ||
+        voice.lang.startsWith('en-')
+      );
+      
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      }
+      
+      speechSynthesis.speak(utterance);
+      return new Promise(resolve => {
+        utterance.onend = resolve;
+        utterance.onerror = resolve;
+      });
+    }
+  } catch (error) {
+    console.error('[Greeting] Error playing voice greeting:', error);
+  }
 }
 
 export function useRealtimeWebRTC() {
@@ -199,9 +237,15 @@ export function useRealtimeWebRTC() {
           setIsConnected(true);
           setIsConnecting(false);
           
-          // Show warm greeting
+          // Play voice greeting and show message
           if (!hasGreeted) {
-            const greeting = getRandomGreeting();
+            const greeting = getRandomVoiceGreeting();
+            console.log('[Greeting] Starting voice greeting...');
+            
+            // Play voice greeting
+            await playVoiceGreeting(ttsManagerRef.current);
+            
+            // Add to conversation history
             addMessage('durmah', greeting, 'voice');
             setHasGreeted(true);
           }
@@ -253,7 +297,7 @@ export function useRealtimeWebRTC() {
   }, [isConnecting, isConnected, hasGreeted, addMessage]);
 
   const handleWebSocketMessage = useCallback((message) => {
-    console.log('[WebSocket] Received:', message.type);
+    console.log('[WebSocket] Received:', message.type, message);
     
     switch (message.type) {
       case 'durmah.ready':
@@ -261,54 +305,90 @@ export function useRealtimeWebRTC() {
         break;
         
       case 'input_audio_buffer.speech_started':
+        console.log('[Voice State] → Listening');
         transcriptionManagerRef.current?.handleTranscriptionEvent(message);
         setIsListening(true);
+        setIsThinking(false);
+        setIsSpeaking(false);
         break;
         
       case 'input_audio_buffer.speech_stopped':
+        console.log('[Voice State] → Thinking');
         transcriptionManagerRef.current?.handleTranscriptionEvent(message);
         setIsListening(false);
         setIsThinking(true);
+        setIsSpeaking(false);
         break;
         
       case 'conversation.item.input_audio_transcription.completed':
+        console.log('[Transcription] Final transcript:', message.transcript);
         transcriptionManagerRef.current?.handleTranscriptionEvent({
           type: message.type,
           transcript: message.transcript
         });
+        // Add user message to conversation
+        if (message.transcript) {
+          addMessage('user', message.transcript, 'voice');
+        }
         break;
         
       case 'audio_chunk':
+        console.log('[Audio] Received TTS chunk');
         if (message.pcm16 && ttsManagerRef.current) {
+          // First audio chunk means we're starting to speak
+          if (!isSpeaking) {
+            console.log('[Voice State] → Speaking');
+            setIsThinking(false);
+            setIsSpeaking(true);
+            setIsListening(false);
+          }
           ttsManagerRef.current.queueAndPlayAudio(message.pcm16, message.sampleRate || 24000);
         }
         break;
         
       case 'audio_end':
+        console.log('[Voice State] → Ready (audio ended)');
         setIsThinking(false);
-        // Audio playback will end naturally
+        setIsSpeaking(false);
+        // Auto-return to listening mode after a brief pause
+        setTimeout(() => {
+          if (voiceModeActive) {
+            console.log('[Voice State] → Auto-return to Listening');
+            setIsListening(true);
+          }
+        }, 1000);
         break;
         
       case 'transcript':
-        setIsThinking(false);
+        console.log('[Response] Received transcript:', message.text);
         addMessage('durmah', message.text, 'voice');
         break;
         
       case 'response.done':
+        console.log('[Response] Complete - ready for next input');
         setIsThinking(false);
-        console.log('[Response] Complete');
+        // Ensure we're ready for next interaction
+        if (!isSpeaking && voiceModeActive) {
+          setTimeout(() => {
+            setIsListening(true);
+          }, 500);
+        }
         break;
         
       case 'error':
         console.error('[WebSocket] Service error:', message.message);
         setError(message.message);
         toast.error(`Voice service error: ${message.message}`);
+        // Reset states on error
+        setIsListening(false);
+        setIsThinking(false);
+        setIsSpeaking(false);
         break;
         
       default:
         console.log('[WebSocket] Unhandled message type:', message.type);
     }
-  }, [addMessage]);
+  }, [addMessage, isSpeaking, voiceModeActive]);
 
   const disconnect = useCallback(async () => {
     try {
@@ -364,6 +444,9 @@ export function useRealtimeWebRTC() {
         setVoiceModeActive(false);
         return false;
       }
+      
+      // Wait a moment for connection to stabilize
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
     console.log("[Voice] Starting voice mode...");
@@ -378,8 +461,16 @@ export function useRealtimeWebRTC() {
     setVoiceModeActive(true);
     console.log("[Voice] Voice mode activated successfully");
     
+    // Auto-start listening after greeting (if just connected)
+    if (!hasGreeted || conversationHistory.length === 0) {
+      setTimeout(() => {
+        console.log('[Voice] Auto-starting listening mode...');
+        setIsListening(true);
+      }, 2000); // Give time for greeting to complete
+    }
+    
     return true;
-  }, [isConnected, connect, initializeAudioCapture]);
+  }, [isConnected, connect, initializeAudioCapture, hasGreeted, conversationHistory]);
 
   const stopVoiceMode = useCallback(async () => {
     console.log("[Voice] Stopping voice mode...");

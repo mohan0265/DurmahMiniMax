@@ -213,61 +213,153 @@ const DurmahWidget: React.FC = () => {
 
             {!isMinimized && (
               <>
-                {/* Modern Messages Area */}
-                <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 max-h-[24rem]">
-                  {conversationHistory.length === 0 && (
-                    <div className="text-center py-12">
-                      <div className="w-16 h-16 rounded-full bg-gradient-to-br from-purple-100 to-indigo-100 flex items-center justify-center mx-auto mb-4">
-                        <Sparkles className="w-8 h-8 text-purple-600" />
+                {/* ChatGPT-Style Voice Interface */}
+                <div className="flex flex-col h-full">
+                  
+                  {/* Central Voice Status Area */}
+                  <div className="flex-1 flex items-center justify-center px-6 py-8">
+                    <div className="text-center">
+                      
+                      {/* Large Voice Button */}
+                      <div className="relative mb-6">
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={voiceModeActive ? stopVoiceMode : startVoiceMode}
+                          disabled={!isConnected}
+                          className={clsx(
+                            'w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 focus:outline-none focus:ring-4 relative overflow-hidden',
+                            isListening 
+                              ? 'bg-green-500 text-white focus:ring-green-300 shadow-lg shadow-green-500/30' 
+                              : isSpeaking
+                              ? 'bg-blue-500 text-white focus:ring-blue-300 shadow-lg shadow-blue-500/30'
+                              : isConnected
+                              ? 'bg-purple-600 text-white focus:ring-purple-300 hover:bg-purple-700 shadow-lg shadow-purple-600/30'
+                              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                          )}
+                        >
+                          {isListening ? (
+                            <>
+                              <Mic className="w-8 h-8" />
+                              <div className="absolute inset-0 rounded-full bg-white/20 animate-ping" />
+                            </>
+                          ) : isSpeaking ? (
+                            <>
+                              <Volume2 className="w-8 h-8 animate-pulse" />
+                              <div className="absolute inset-0 rounded-full bg-white/20 animate-pulse" />
+                            </>
+                          ) : isConnecting ? (
+                            <div className="w-8 h-8 border-4 border-white border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            <Brain className="w-8 h-8" />
+                          )}
+                        </motion.button>
+                        
+                        {/* Voice Wave Animation */}
+                        {isListening && (
+                          <div className="absolute -inset-6 flex items-center justify-center">
+                            {[0, 1, 2].map(i => (
+                              <motion.div
+                                key={i}
+                                className="absolute w-32 h-32 rounded-full border-2 border-green-300"
+                                animate={{
+                                  scale: [1, 1.5, 1],
+                                  opacity: [0.6, 0, 0.6],
+                                }}
+                                transition={{
+                                  duration: 2,
+                                  repeat: Infinity,
+                                  delay: i * 0.4,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <h3 className="text-lg font-semibold text-gray-800 mb-2">Ready to help!</h3>
-                      <p className="text-gray-500 text-sm max-w-xs mx-auto">
-                        {inputMode === 'voice' 
-                          ? 'Start speaking or click the mic button to begin our conversation.' 
-                          : 'Type your message below to start chatting with your legal assistant.'}
-                      </p>
-                    </div>
-                  )}
-                  {conversationHistory.map((m, i) => (
-                    <ModernMessage key={m.id} message={m} isLatest={i === conversationHistory.length - 1} />
-                  ))}
-                  {partialTranscript && (
-                    <ModernMessage 
-                      message={{ 
-                        sender: 'user', 
-                        text: partialTranscript, 
-                        type: 'voice', 
-                        timestamp: new Date().toISOString() 
-                      }} 
-                      isLatest={true}
-                      isPartial={true}
-                    />
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
 
-                {/* Modern Input Area */}
-                <div className="border-t border-gray-200/50 bg-gray-50/50">
+                      {/* Status Text */}
+                      <h3 className="text-xl font-semibold text-gray-800 mb-2">
+                        {isListening 
+                          ? 'Listening...' 
+                          : isSpeaking 
+                          ? 'Speaking...'
+                          : isConnecting
+                          ? 'Connecting...'
+                          : isConnected 
+                          ? 'Tap to speak'
+                          : 'Offline'}
+                      </h3>
+                      
+                      <p className="text-gray-500 text-sm max-w-xs mx-auto mb-4">
+                        {isListening 
+                          ? 'Go ahead, I\'m listening to your question.' 
+                          : isSpeaking 
+                          ? 'Let me think about that...'
+                          : isConnecting
+                          ? 'Setting up your voice assistant...'
+                          : isConnected 
+                          ? 'Ready to help with your legal questions'
+                          : 'Connection lost - tap to reconnect'}
+                      </p>
+
+                      {/* Live Transcript */}
+                      {(partialTranscript || (conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1])) && (
+                        <div className="bg-gray-50 rounded-2xl p-4 max-w-md mx-auto">
+                          {partialTranscript ? (
+                            <div className="text-gray-600 text-sm">
+                              <span className="text-blue-600 font-medium">You: </span>
+                              {partialTranscript}
+                              <motion.span
+                                animate={{ opacity: [1, 0, 1] }}
+                                transition={{ duration: 1, repeat: Infinity }}
+                                className="inline-block w-0.5 h-4 bg-blue-500 ml-1"
+                              />
+                            </div>
+                          ) : conversationHistory.length > 0 && (
+                            <div className="text-gray-600 text-sm">
+                              <span className="text-purple-600 font-medium">Durmah: </span>
+                              {conversationHistory[conversationHistory.length - 1].text.substring(0, 100)}
+                              {conversationHistory[conversationHistory.length - 1].text.length > 100 ? '...' : ''}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Error Display */}
                   {error && (
                     <motion.div 
-                      initial={{ opacity: 0, y: -10 }}
+                      initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="px-6 py-3 bg-red-50 text-red-700 text-center text-sm font-medium border-b border-red-100"
+                      className="mx-6 mb-4 px-4 py-3 bg-red-50 text-red-700 text-center text-sm font-medium rounded-2xl"
                     >
                       <AlertTriangle className="w-4 h-4 inline mr-2" />
                       {error}
                     </motion.div>
                   )}
-                  {inputMode === 'voice' ? (
-                    <VoiceInput 
-                      isListening={isListening}
-                      isSpeaking={isSpeaking}
-                      isConnected={isConnected}
-                      onToggleVoice={voiceModeActive ? stopVoiceMode : startVoiceMode}
-                    />
-                  ) : (
-                    <ModernTextInput onSendMessage={handleSendText} disabled={!isConnected} />
-                  )}
+
+                  {/* Quick Actions */}
+                  <div className="px-6 pb-6">
+                    <div className="flex justify-center gap-3">
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={clearConversation}
+                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-full text-sm font-medium transition-colors"
+                      >
+                        Clear Chat
+                      </motion.button>
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={handleToggleInputMode}
+                        className="px-4 py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-full text-sm font-medium transition-colors"
+                      >
+                        {inputMode === 'voice' ? 'Text Mode' : 'Voice Mode'}
+                      </motion.button>
+                    </div>
+                  </div>
                 </div>
               </>
             )}
