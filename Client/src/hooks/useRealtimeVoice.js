@@ -1,8 +1,12 @@
 // Client/src/hooks/useRealtimeVoice.js
-import { useCallback, useEffect, useRef, useState } from "react";
+// Small wrapper around the WebRTC hook + audio unlock on user gesture.
+
+import { useCallback, useRef, useState } from "react";
 import { useRealtimeWebRTC } from "./useRealtimeWebRTC";
 
-const SESSION_ENDPOINT = import.meta.env.VITE_SESSION_ENDPOINT || "/.netlify/functions/realtime-session";
+const SESSION_ENDPOINT =
+  import.meta.env.VITE_SESSION_ENDPOINT || "/.netlify/functions/realtime-session";
+
 const DEBUG =
   import.meta.env.VITE_DEBUG_VOICE === "true" ||
   (typeof window !== "undefined" && window.location.search.includes("debug=voice"));
@@ -22,44 +26,61 @@ export function useRealtimeVoice() {
   } = useRealtimeWebRTC();
 
   const [voiceModeActive, setVoiceModeActive] = useState(false);
-  const [cooldown, setCooldown] = useState(false);
-  const tokenRef = useRef(null);
-  const modelRef = useRef(null);
+  const cooldownRef = useRef(false);
+  const unlockedRef = useRef(false);
 
   const log = (...a) => { if (DEBUG) console.log("[useRealtimeVoice]", ...a); };
 
+  const unlockAudio = () => {
+    if (unlockedRef.current) return;
+    try {
+      const ACtx = window.AudioContext || window.webkitAudioContext;
+      if (ACtx) {
+        const ctx = new ACtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.gain.value = 0.0001; // inaudible blip to unlock
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.02);
+        ctx.resume();
+      }
+    } catch {}
+    unlockedRef.current = true;
+  };
+
   const getSession = useCallback(async () => {
-    const r = await fetch(SESSION_ENDPOINT, { method: "POST" });
-    if (!r.ok) throw new Error(`Session endpoint failed: ${await r.text()}`);
-    const j = await r.json();
-    if (!j?.token) throw new Error("No token returned from session endpoint");
-    tokenRef.current = j.token;
-    modelRef.current = j.model || "gpt-4o-realtime-preview-2024-12-17";
-    return { token: tokenRef.current, model: modelRef.current };
+    const resp = await fetch(SESSION_ENDPOINT, { method: "POST" });
+    if (!resp.ok) throw new Error(`Session endpoint failed: ${await resp.text()}`);
+    const json = await resp.json();
+    if (!json?.token) throw new Error("No token returned from session endpoint");
+    return { token: json.token, model: json.model || "gpt-4o-realtime-preview-2024-12-17" };
   }, []);
 
   const connect = useCallback(async () => {
-    if (cooldown || status === "connecting" || status === "connected") return;
+    if (cooldownRef.current || status === "connecting" || status === "connected") return;
     try {
       const { token, model } = await getSession();
       await rtConnect({ token, model });
-      log("connected");
     } catch (e) {
       console.error(e);
-      setCooldown(true);
-      setTimeout(() => setCooldown(false), 2000);
+      cooldownRef.current = true;
+      setTimeout(() => { cooldownRef.current = false; }, 1500);
       throw e;
     }
-  }, [cooldown, status, getSession, rtConnect]);
+  }, [status, getSession, rtConnect]);
 
   const startVoiceMode = useCallback(async () => {
+    unlockAudio();          // ⟵ critical: ensures autoplay allowed
     if (!isConnected) await connect();
     setVoiceModeActive(true);
+    log("voice mode ON");
   }, [isConnected, connect]);
 
   const stopVoiceMode = useCallback(() => {
     setVoiceModeActive(false);
-    rtDisconnect();
+    try { rtDisconnect(); } catch {}
+    log("voice mode OFF");
   }, [rtDisconnect]);
 
   const sendMessage = useCallback((text) => {
@@ -67,21 +88,18 @@ export function useRealtimeVoice() {
     sendText(text.trim());
   }, [sendText]);
 
-  useEffect(() => {
-    if (!voiceModeActive) return;
-    const onVis = async () => {
-      if (document.visibilityState === "visible" && !isConnected) {
-        try { await connect(); } catch {}
-      }
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [voiceModeActive, isConnected, connect]);
-
   return {
-    isConnected, isListening, isSpeaking,
-    voiceModeActive, status, lastError,
-    transcript, partialTranscript,
-    connect, startVoiceMode, stopVoiceMode, sendMessage,
+    status,
+    isConnected,
+    isListening,
+    isSpeaking,
+    voiceModeActive,
+    lastError,
+    transcript,
+    partialTranscript,
+    connect,
+    startVoiceMode,
+    stopVoiceMode,
+    sendMessage,
   };
 }
