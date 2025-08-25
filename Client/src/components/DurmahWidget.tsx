@@ -1,72 +1,74 @@
 // Client/src/components/DurmahWidget.tsx
-// One-button UI + small transcript panel (robust against empty/partial data).
-
-import React, { useState } from "react";
+import React, { useMemo } from "react";
 import { Mic, MicOff } from "lucide-react";
+import { motion } from "framer-motion";
+import clsx from "clsx";
 import { useRealtimeVoice } from "../hooks/useRealtimeVoice";
 
+type Line = { id: string; text: string };
+
 const DurmahWidget: React.FC = () => {
-  const [open, setOpen] = useState(true);
   const {
-    voiceModeActive,
-    startVoiceMode,
-    stopVoiceMode,
+    status,
+    isConnected,
+    isListening,
+    isSpeaking,
     transcript,
     partialTranscript,
-    status,
-    isSpeaking,
+    startVoiceMode,
+    stopVoiceMode,
   } = useRealtimeVoice();
 
-  const toggle = () => {
-    if (voiceModeActive) stopVoiceMode();
-    else startVoiceMode();
-  };
+  const isActive = isConnected && (isListening || isSpeaking);
 
-  const list = Array.isArray(transcript) ? transcript : [];
+  const lines: Line[] = useMemo(() => {
+    if (Array.isArray(transcript)) return transcript as Line[];
+    return [];
+  }, [transcript]);
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
-      {/* Mic Button */}
-      <button
-        onClick={toggle}
-        title={voiceModeActive ? "Stop voice" : "Start voice"}
-        className={`w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition ${
-          voiceModeActive ? "bg-red-500 hover:bg-red-600" : "bg-purple-600 hover:bg-purple-700"
-        }`}
-      >
-        {voiceModeActive ? (
-          <MicOff className="text-white w-8 h-8" />
-        ) : (
-          <Mic className="text-white w-8 h-8" />
-        )}
-      </button>
-
-      {/* Transcript Panel */}
-      {open && (
-        <div className="mt-3 w-80 bg-white/95 backdrop-blur rounded-xl border border-gray-200 shadow-xl p-3">
-          <div className="font-semibold text-purple-700">Conversation Transcript</div>
-          <div className="h-40 overflow-y-auto mt-2 space-y-1">
-            {list.length > 0 ? (
-              list.map((line: any, idx: number) => (
-                <div key={line?.id ?? idx} className="p-2 rounded-md bg-gray-100 text-sm">
-                  {line?.text ?? ""}
-                </div>
-              ))
-            ) : (
-              <div className="text-gray-400 italic text-center text-sm">
-                No conversation yet...
-              </div>
-            )}
-            {partialTranscript && (
-              <div className="p-2 rounded-md bg-yellow-100 text-sm">{partialTranscript}</div>
-            )}
-          </div>
-          <div className="mt-2 text-xs text-gray-600">
-            Status: {status || "idle"} {isSpeaking ? "• Speaking" : ""}
-          </div>
+    <>
+      {/* little transcript card */}
+      <div className="fixed bottom-28 right-6 w-80 max-h-60 rounded-xl shadow-lg bg-white/95 border border-purple-200 overflow-hidden">
+        <div className="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-semibold">
+          Conversation Transcript
         </div>
-      )}
-    </div>
+        <div className="p-3 text-sm space-y-2 overflow-y-auto" style={{ maxHeight: 160 }}>
+          {lines.length > 0 ? (
+            lines.map((line, idx) => (
+              <div key={line?.id ?? idx} className="p-2 rounded-md bg-gray-100 text-gray-800">
+                {line?.text ?? ""}
+              </div>
+            ))
+          ) : (
+            <div className="text-gray-400 italic">No conversation yet...</div>
+          )}
+          {partialTranscript && (
+            <div className="p-2 rounded-md bg-yellow-100 text-gray-800">{partialTranscript}</div>
+          )}
+        </div>
+        <div className="px-4 py-2 text-xs text-gray-600 border-t">
+          Status: {status}
+          {isListening ? " • Listening" : " • Mic idle"}
+          {isSpeaking ? " • Speaking" : " • Silent"}
+        </div>
+      </div>
+
+      {/* mic button */}
+      <motion.button
+        onClick={isActive ? stopVoiceMode : startVoiceMode}
+        whileTap={{ scale: 0.95 }}
+        className={clsx(
+          "fixed bottom-6 right-6 w-14 h-14 rounded-full shadow-2xl grid place-items-center text-white",
+          isActive ? "bg-red-500" : "bg-purple-600"
+        )}
+      >
+        {isActive ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+        {isListening && (
+          <span className="absolute inset-0 rounded-full ring-2 ring-white/40 animate-ping" />
+        )}
+      </motion.button>
+    </>
   );
 };
 
