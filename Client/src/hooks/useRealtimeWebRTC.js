@@ -16,14 +16,18 @@ export function useRealtimeWebRTC() {
   // internals
   const pcRef = useRef(null);
   const micStreamRef = useRef(null);
+
   const audioElRef = useRef(null);      // OpenAI remote audio (fallback)
   const localTTSRef = useRef(null);     // ElevenLabs audio element
   const dcRef = useRef(null);
+
   const audioCtxRef = useRef(null);
   const vadRemoteRef = useRef({ alive: false, raf: 0 });
-  const activeResponseRef = useRef(false); // whether assistant is currently speaking/streaming
 
-  // state
+  const activeResponseRef = useRef(false); // assistant is mid-reply
+  const replyBufferRef = useRef("");       // accumulates output_text delta
+
+  // public state
   const [status, setStatus] = useState("idle"); // idle | connecting | connected | disconnecting
   const [isConnected, setIsConnected] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -121,20 +125,39 @@ export function useRealtimeWebRTC() {
     }
   };
 
+  // ---------- finalize one assistant turn ----------
+  const flushReply = (idHint) => {
+    const full = replyBufferRef.current.trim();
+    replyBufferRef.current = "";
+    if (full) {
+      setPartialTranscript("");
+      setTranscript((old) => [...old, { id: idHint || crypto.randomUUID(), text: full }]);
+      if (USE_ELEVEN) {
+        // Speak once via ElevenLabs
+        void playEleven(full);
+      } else {
+        // Remote audio path shows pulse; ensure state
+        setIsSpeaking(true);
+      }
+    }
+    activeResponseRef.current = false;
+  };
+
   // ---------- server messages ----------
   const handleServerEvent = (evt) => {
     let msg;
     try { msg = JSON.parse(evt.data); } catch { return; }
     if (DEBUG) log("recv:", msg);
 
-    // error / rate limit
+    // errors / rate limit
     if (msg.type === "error") {
       setLastError(msg.error?.message || "Server error");
       activeResponseRef.current = false;
       return;
     }
+    if (msg.type === "rate_limits.updated") return;
 
-    // transcript
+    // user ASR live text (if server sends it)
     if (msg.type === "transcript.partial" && typeof msg.text === "string") {
       setPartialTranscript(msg.text);
       return;
@@ -145,40 +168,38 @@ export function useRealtimeWebRTC() {
       return;
     }
 
-    // life-cycle hints
-    if (msg.type === "response.created") {
+    // assistant lifecycle (newer schema)
+    if (msg.type === "response.created" || msg.type === "conversation.item.created") {
       activeResponseRef.current = true;
-      return;
-    }
-    if (msg.type === "response.canceled") {
-      activeResponseRef.current = false;
+      // start a new buffer for any deltas that follow
+      replyBufferRef.current = "";
       return;
     }
 
-    // output text
+    // assistant text streaming (newer schema)
     if (msg.type === "response.output_text.delta" && typeof msg.delta === "string") {
-      setPartialTranscript((p) => p + msg.delta);
+      replyBufferRef.current += msg.delta;
+      setPartialTranscript((p) => (p + msg.delta));
       activeResponseRef.current = true;
       return;
     }
+    if (msg.type === "response.output_text.done") {
+      // part finished; keep waiting for response.done to flush
+      return;
+    }
 
-    if (msg.type === "response.completed") {
-      const out = msg.response?.output_text;
-      const full = Array.isArray(out) ? out.join("") : (typeof out === "string" ? out : "");
-      if (full && full.trim()) {
-        setPartialTranscript("");
-        setTranscript((old) => [...old, { id: msg.id || crypto.randomUUID(), text: full }]);
-        if (USE_ELEVEN) {
-          // speak with ElevenLabs once per turn
-          playEleven(full);
-        } else {
-          // remote audio path handles speaking pulse; ensure flag toggles
-          setIsSpeaking(true);
-          activeResponseRef.current = false;
-        }
-      } else {
-        activeResponseRef.current = false;
-      }
+    // assistant done (OpenAI sends either response.completed OR response.done)
+    if (msg.type === "response.completed" || msg.type === "response.done") {
+      flushReply(msg.response?.id || msg.id);
+      return;
+    }
+
+    // older schema fallback (just in case)
+    if (msg.type === "response.completed" && msg.response?.output_text) {
+      const out = msg.response.output_text;
+      const full = Array.isArray(out) ? out.join("") : String(out || "");
+      replyBufferRef.current = full;
+      flushReply(msg.id);
       return;
     }
   };
@@ -194,7 +215,7 @@ export function useRealtimeWebRTC() {
       pcRef.current = pc;
 
       pc.onconnectionstatechange = () => {
-        DEBUG && log("pc state:", pc.connectionState);
+        if (DEBUG) log("pc state:", pc.connectionState);
         if (pc.connectionState === "connected") setIsConnected(true);
       };
 
@@ -210,25 +231,25 @@ export function useRealtimeWebRTC() {
 
       // data channel
       dcRef.current = pc.createDataChannel("oai-events");
-      dcRef.current.onopen = () => { DEBUG && log("data channel open"); };
+      dcRef.current.onopen = () => { if (DEBUG) log("data channel open"); };
       dcRef.current.onmessage = handleServerEvent;
 
-      // audio transceiver: sendonly when ElevenLabs (no remote audio)
+      // audio transceiver: sendonly when ElevenLabs
       pc.addTransceiver("audio", { direction: USE_ELEVEN ? "sendonly" : "sendrecv" });
 
       // mic
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (err) {
+      } catch {
         setLastError("Microphone permission denied");
-        throw err;
+        throw new Error("MIC_DENIED");
       }
       micStreamRef.current = stream;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       setIsListening(true);
 
-      // local barge-in: only if a response is active
+      // local barge-in: only cancel if a reply is active
       try {
         const ACtx = window.AudioContext || window.webkitAudioContext;
         if (ACtx) {
@@ -248,12 +269,13 @@ export function useRealtimeWebRTC() {
             }
             const nowSpeaking = maxDev > 10;
 
-            // rising edge -> cancel ONLY if assistant is mid-reply
             if (!speaking && nowSpeaking && activeResponseRef.current && dcRef.current && dcRef.current.readyState === "open") {
               try { dcRef.current.send(JSON.stringify({ type: "response.cancel" })); } catch {}
               if (localTTSRef.current) { try { localTTSRef.current.pause(); } catch {} localTTSRef.current = null; }
               setIsSpeaking(false);
               activeResponseRef.current = false;
+              replyBufferRef.current = "";
+              setPartialTranscript("");
             }
             speaking = nowSpeaking;
             requestAnimationFrame(tick);
@@ -281,7 +303,7 @@ export function useRealtimeWebRTC() {
 
       setStatus("connected");
       setIsConnected(true);
-      DEBUG && log("connected");
+      if (DEBUG) log("connected");
     } catch (e) {
       console.error(e);
       setLastError(String(e?.message || e));
@@ -309,6 +331,8 @@ export function useRealtimeWebRTC() {
       setIsConnected(false);
       setIsSpeaking(false);
       activeResponseRef.current = false;
+      replyBufferRef.current = "";
+      setPartialTranscript("");
       setStatus("idle");
     }
   }, []);
@@ -319,7 +343,7 @@ export function useRealtimeWebRTC() {
     try {
       dcRef.current.send(JSON.stringify({ type: "input_text.append", text }));
       dcRef.current.send(JSON.stringify({ type: "response.create" }));
-      DEBUG && log("sent text + response.create");
+      if (DEBUG) log("sent text + response.create");
     } catch (e) {
       setLastError(String(e?.message || e));
     }
