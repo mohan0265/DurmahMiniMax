@@ -1,6 +1,7 @@
-// /netlify/functions/tts-eleven.js
-// ElevenLabs TTS proxy for the browser. Returns audio/mpeg.
-// Env needed: ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
+// Netlify function that proxies ElevenLabs Text-to-Speech
+// Env required: ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
+// Optional: ELEVENLABS_MODEL (default eleven_turbo_v2_5)
+// Request body: { text, voiceId?, stability?, similarity?, style?, boost?, speed? }
 
 export async function handler(event, _context) {
   const cors = {
@@ -8,6 +9,7 @@ export async function handler(event, _context) {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
+
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: cors, body: "" };
   }
@@ -16,52 +18,66 @@ export async function handler(event, _context) {
   }
 
   try {
-    const { text } = JSON.parse(event.body || "{}");
-    if (!text || !text.trim()) {
-      return { statusCode: 400, headers: cors, body: "Missing text" };
-    }
-
     const apiKey = process.env.ELEVENLABS_API_KEY;
-    const voiceId = process.env.ELEVENLABS_VOICE_ID;
-    if (!apiKey || !voiceId) {
+    const defaultVoice = process.env.ELEVENLABS_VOICE_ID;
+    const model = process.env.ELEVENLABS_MODEL || "eleven_turbo_v2_5";
+    if (!apiKey || !defaultVoice) {
       return { statusCode: 500, headers: cors, body: "Missing ElevenLabs env" };
     }
 
-    const resp = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
-      {
-        method: "POST",
-        headers: {
-          "xi-api-key": apiKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          model_id: "eleven_turbo_v2",
-          // Lower latency for snappier replies (0–4, higher = lower latency)
-          optimize_streaming_latency: 2,
-          voice_settings: {
-            stability: 0.6,
-            similarity_boost: 0.85,
-            style: 0.55,
-            use_speaker_boost: true,
-          },
-          // Keep it small for quick playback; change if you prefer higher fidelity
-          output_format: "mp3_22050_32",
-        }),
-      }
-    );
+    const {
+      text,
+      voiceId,
+      stability = 0.40,          // more natural variation
+      similarity = 0.80,         // keep voice identity
+      style = 0.35,              // 0..1 (higher = more expressive)
+      boost = true,              // speaker boost
+      speed = 0.95,              // ElevenLabs supports speed in latest TTS; if ignored, we also slow in client
+    } = JSON.parse(event.body || "{}");
+
+    if (!text || !String(text).trim()) {
+      return { statusCode: 400, headers: cors, body: "Missing text" };
+    }
+
+    const vid = (voiceId || defaultVoice).trim();
+
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}/stream?optimize_streaming_latency=0`;
+
+    const body = {
+      model_id: model,
+      text,
+      // If your account supports 'voice_settings', this will shape tone.
+      voice_settings: {
+        stability,
+        similarity_boost: similarity,
+        style,
+        use_speaker_boost: !!boost,
+      },
+      // Some orgs have this new param; harmless if not supported:
+      // generation_config: { speed }, 
+      // NOTE: if your plan/API version doesn’t accept speed, we’ll still slow on the client.
+    };
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+      },
+      body: JSON.stringify(body),
+    });
 
     if (!resp.ok) {
-      const errTxt = await resp.text();
+      const errText = await resp.text();
       return {
         statusCode: resp.status,
         headers: cors,
-        body: `ElevenLabs failed: ${errTxt}`,
+        body: `ElevenLabs error: ${errText}`,
       };
     }
 
-    const buf = await resp.arrayBuffer();
+    const arrayBuffer = await resp.arrayBuffer();
     return {
       statusCode: 200,
       headers: {
@@ -69,14 +85,10 @@ export async function handler(event, _context) {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "no-store",
       },
-      body: Buffer.from(buf).toString("base64"),
+      body: Buffer.from(arrayBuffer).toString("base64"),
       isBase64Encoded: true,
     };
   } catch (e) {
-    return {
-      statusCode: 500,
-      headers: cors,
-      body: `Server error: ${String(e)}`,
-    };
+    return { statusCode: 500, headers: cors, body: String(e) };
   }
 }

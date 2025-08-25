@@ -89,6 +89,61 @@ export function useRealtimeWebRTC() {
     setIsSpeaking(false);
   };
 
+// --- ElevenLabs local playback (soft + slightly slower) ---
+const playEleven = async (text) => {
+  try {
+    if (!text || !text.trim()) return;
+
+    // stop/cleanup any previous local TTS
+    if (localTTSRef.current) {
+      try { localTTSRef.current.pause(); } catch {}
+      try { URL.revokeObjectURL(localTTSRef.current.src); } catch {}
+      localTTSRef.current = null;
+    }
+
+    // call our Netlify function (server can ignore "speed" if not implemented)
+    const resp = await fetch("/.netlify/functions/tts-eleven", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        speed: 0.95, // hint for server; safe if ignored
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`TTS failed: ${err}`);
+    }
+
+    // stream to an <audio> element
+    const buf = await resp.arrayBuffer();
+    const blob = new Blob([buf], { type: "audio/mpeg" });
+    const url = URL.createObjectURL(blob);
+
+    const el = new Audio();
+    el.src = url;
+
+    // soften & slow a touch (client-side)
+    el.volume = parseFloat(import.meta.env.VITE_TTS_VOLUME || "0.85");      // 0.0 .. 1.0
+    el.playbackRate = parseFloat(import.meta.env.VITE_TTS_RATE || "0.95");  // e.g. 0.85–1.05
+
+    el.onended = () => {
+      try { URL.revokeObjectURL(url); } catch {}
+      if (localTTSRef.current === el) localTTSRef.current = null;
+      setIsSpeaking(false);
+    };
+
+    localTTSRef.current = el;
+    setIsSpeaking(true);
+    await el.play();
+  } catch (e) {
+    console.error(e);
+    setLastError(String(e?.message || e));
+    setIsSpeaking(false);
+  }
+};
+
+
   // ---------- server messages ----------
   const handleServerEvent = (evt) => {
     let msg;
