@@ -1,8 +1,9 @@
 // /netlify/functions/realtime-session.js
-// Issues an ephemeral OpenAI Realtime session token to the browser.
-// POST only. CORS allowed for browser usage.
+// Issues an ephemeral Realtime session token for the browser.
+// Env required: OPENAI_API_KEY
+// Optional: REALTIME_MODEL, REALTIME_VOICE, TURN_THRESHOLD, TURN_SILENCE_MS, SYSTEM_INSTRUCTIONS
 
-export async function handler(event, _context) {
+export async function handler(event) {
   const cors = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
@@ -25,10 +26,14 @@ export async function handler(event, _context) {
     const model = body.model || process.env.REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17";
     const voice = body.voice || process.env.REALTIME_VOICE || "verse";
 
+    const threshold = Number(process.env.TURN_THRESHOLD ?? 0.50);          // lower = more sensitive
+    const silenceMs = Number(process.env.TURN_SILENCE_MS ?? 700);          // pause before reply
+    const instructions = process.env.SYSTEM_INSTRUCTIONS || "Please speak clearly and at a calm, moderate pace. Wait for the user to finish speaking before replying. Keep answers concise and helpful.";
+
     const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
         "Content-Type": "application/json",
         "OpenAI-Beta": "realtime=v1",
       },
@@ -36,12 +41,15 @@ export async function handler(event, _context) {
         model,
         voice,
         modalities: ["text", "audio"],
+        instructions,
+        // Server-side VAD for smooth turns
+        turn_detection: { type: "server_vad", threshold, silence_duration_ms: silenceMs },
       }),
     });
 
     if (!resp.ok) {
-      const detail = await resp.text();
-      return { statusCode: resp.status, headers: cors, body: JSON.stringify({ error: "OpenAI session create failed", detail }) };
+      const text = await resp.text();
+      return { statusCode: resp.status, headers: cors, body: JSON.stringify({ error: "OpenAI session create failed", detail: text }) };
     }
 
     const json = await resp.json();
@@ -49,10 +57,10 @@ export async function handler(event, _context) {
       statusCode: 200,
       headers: { ...cors, "Content-Type": "application/json" },
       body: JSON.stringify({
-        token: json?.client_secret?.value || null,
+        token: json?.client_secret?.value,
         model,
         voice,
-        expires_at: json?.expires_at ?? null,
+        expires_at: json?.expires_at || null,
       }),
     };
   } catch (err) {
