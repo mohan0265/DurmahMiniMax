@@ -1,5 +1,6 @@
 // /netlify/functions/tts-eleven.js
-// Proxies ElevenLabs TTS. POST { text } -> audio/mpeg
+// ElevenLabs TTS proxy for the browser. Returns audio/mpeg.
+// Env needed: ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 
 export async function handler(event, _context) {
   const cors = {
@@ -15,45 +16,67 @@ export async function handler(event, _context) {
   }
 
   try {
-    const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-    const VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
-    if (!ELEVENLABS_API_KEY || !VOICE_ID) {
-      return { statusCode: 500, headers: cors, body: "Missing ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID" };
-    }
-
     const { text } = JSON.parse(event.body || "{}");
-    if (!text || !String(text).trim()) {
+    if (!text || !text.trim()) {
       return { statusCode: 400, headers: cors, body: "Missing text" };
     }
 
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.3, use_speaker_boost: true },
-        model_id: "eleven_monolingual_v1",
-        output_format: "mp3_44100_128",
-      }),
-    });
-
-    if (!resp.ok) {
-      const t = await resp.text();
-      return { statusCode: resp.status, headers: cors, body: `ElevenLabs error: ${t}` };
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    const voiceId = process.env.ELEVENLABS_VOICE_ID;
+    if (!apiKey || !voiceId) {
+      return { statusCode: 500, headers: cors, body: "Missing ElevenLabs env" };
     }
 
-    const buf = Buffer.from(await resp.arrayBuffer());
+    const resp = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_turbo_v2",
+          // Lower latency for snappier replies (0–4, higher = lower latency)
+          optimize_streaming_latency: 2,
+          voice_settings: {
+            stability: 0.6,
+            similarity_boost: 0.85,
+            style: 0.55,
+            use_speaker_boost: true,
+          },
+          // Keep it small for quick playback; change if you prefer higher fidelity
+          output_format: "mp3_22050_32",
+        }),
+      }
+    );
+
+    if (!resp.ok) {
+      const errTxt = await resp.text();
+      return {
+        statusCode: resp.status,
+        headers: cors,
+        body: `ElevenLabs failed: ${errTxt}`,
+      };
+    }
+
+    const buf = await resp.arrayBuffer();
     return {
       statusCode: 200,
-      headers: { ...cors, "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
-      body: buf.toString("base64"),
+      headers: {
+        ...cors,
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "no-store",
+      },
+      body: Buffer.from(buf).toString("base64"),
       isBase64Encoded: true,
     };
   } catch (e) {
-    return { statusCode: 500, headers: cors, body: `Server error: ${String(e)}` };
+    return {
+      statusCode: 500,
+      headers: cors,
+      body: `Server error: ${String(e)}`,
+    };
   }
 }
