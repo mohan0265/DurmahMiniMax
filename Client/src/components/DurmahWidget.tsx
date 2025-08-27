@@ -1,12 +1,46 @@
-// Client/src/components/DurmahWidget.tsx
-// One-button voice widget with live transcript and post-chat actions,
-// now including "Save to cloud" (Supabase, RLS-protected by user_id).
+// src/components/DurmahWidget.tsx
+// Final host-aware widget:
+// - Uses Supabase + user from the host app via supabaseBridge
+// - Saves transcripts to public.voice_conversations with optional academic context
+// - One client, one session (RLS-safe). No duplicate Supabase instances.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Copy, Save, Trash2, FileText } from "lucide-react";
+import { supabase, useAuth } from "../lib/supabaseBridge";
 import { useRealtimeVoice } from "../hooks/useRealtimeVoice";
-import { supabase } from "../lib/supabaseClient";
+
+type WidgetProps = {
+  /** Optional academic context: pass from YAAG, module pages, etc. */
+  context?: {
+    route?: string;
+    term?: "Michaelmas" | "Epiphany" | "Easter" | string;
+    year_label?: string;      // e.g. "Year 1 (LLB)"
+    module_id?: string;       // your modules table id (uuid or text)
+    module_code?: string;     // e.g. "LAW1234"
+    week?: string;            // e.g. "Week 5"
+    tags?: string[];          // free-form labels
+    extra?: Record<string, any>;
+  };
+};
 
 type Line = { id: string; text: string };
+
+type AnyLine = { id?: string | number; text?: string } | string;
+
+/** Make sure transcript is always [{id, text}] for our widget */
+function normalizeTranscript(arr: AnyLine[] | undefined | null): Line[] {
+  if (!arr) return [];
+  return arr.map((t, idx) => {
+    if (typeof t === "string") {
+      return { id: String(idx), text: t };
+    }
+    return {
+      id: String(t.id ?? idx),
+      text: String(t.text ?? ""),
+    };
+  });
+}
+
 
 const fmtTime = (d = new Date()) => {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -15,75 +49,76 @@ const fmtTime = (d = new Date()) => {
   )}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 };
 
-export default function DurmahWidget() {
+export default function DurmahWidget({ context }: WidgetProps) {
+  // Use *host* app auth so RLS == student’s session
+  const { user } = useAuth() || { user: null };
+
+  // Your voice hook (works as-is)
   const {
-    status,
+    status,              // "idle" | "connecting" | "connected"
     isConnected,
     isListening,
     isSpeaking,
-    voiceModeActive,
-    transcript,
-    partialTranscript,
+    transcript,          // [{id,text}, ...]
+    partialTranscript,   // live partial line
     connect,
     startVoiceMode,
     stopVoiceMode,
-    sendMessage,
     lastError,
   } = useRealtimeVoice();
 
-  // Track a session's approximate start time (for metadata)
+  // Track session start for metadata
   const sessionStartRef = useRef<string | null>(null);
 
-  // Local copy for post-chat actions
+  // Local buffer we can save/delete without mutating the hook
   const [localTranscript, setLocalTranscript] = useState<Line[]>([]);
   useEffect(() => {
-    setLocalTranscript(Array.isArray(transcript) ? (transcript as Line[]) : []);
-  }, [transcript]);
+  setLocalTranscript(normalizeTranscript(transcript as unknown as AnyLine[]));
+}, [transcript]);
+
 
   const [showActions, setShowActions] = useState(false);
-  useEffect(() => {
-    if (!voiceModeActive && (localTranscript?.length ?? 0) > 0) {
-      setShowActions(true);
-    }
-  }, [voiceModeActive, localTranscript]);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [cloudId, setCloudId] = useState<string | null>(null);
 
-  const joinedText = useMemo(() => {
-    const lines = Array.isArray(localTranscript) ? localTranscript : [];
-    return lines.map((l) => (l?.text ?? "").trim()).filter(Boolean).join("\n");
-  }, [localTranscript]);
+  const joinedText = useMemo(
+    () => localTranscript.map(l => l.text).join("\n"),
+    [localTranscript]
+  );
 
-  // --- Actions: save, copy, delete, save to cloud ---
-  const handleSaveTxt = () => {
-    const content = joinedText || "(empty conversation)";
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const stamp = fmtTime();
-    a.href = url;
-    a.download = `durmah-transcript-${stamp}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      try { URL.revokeObjectURL(url); } catch {}
-      a.remove();
-    }, 0);
-  };
-
-  const handleCopy = async () => {
+  const copyToClipboard = async () => {
+    setSaveMsg(null);
     try {
       await navigator.clipboard.writeText(joinedText || "");
-    } catch {}
+      setSaveMsg("Copied to clipboard ✅");
+    } catch (e: any) {
+      setSaveMsg(`Copy failed: ${e?.message || e}`);
+    }
   };
 
-  const handleDeleteLocal = () => {
+  const saveTxtFile = () => {
+    setSaveMsg(null);
+    const blob = new Blob([joinedText || ""], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), {
+      href: url,
+      download: `durmah-${fmtTime()}.txt`,
+    });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const deleteLocal = () => {
+    setSaveMsg(null);
     setLocalTranscript([]);
     setShowActions(false);
   };
 
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<string | null>(null);
-
-  const handleSaveCloud = async () => {
+  // --- Save to Supabase with RLS ---
+  const saveToCloud = async () => {
     setSaveMsg(null);
     if (!joinedText.trim()) {
       setSaveMsg("Nothing to save.");
@@ -91,24 +126,37 @@ export default function DurmahWidget() {
     }
     setSaving(true);
     try {
+      // IMPORTANT: use same client/session as host app
       const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
-      if (!user) {
+      const authedUser = auth?.user ?? user;
+      if (!authedUser) {
         setSaveMsg("Please sign in to save notes.");
         setSaving(false);
         return;
       }
 
+      const started_at = sessionStartRef.current ?? new Date().toISOString();
+      const ended_at = new Date().toISOString();
+
       const payload = {
-        user_id: user.id,
-        transcript: joinedText,
-        started_at: sessionStartRef.current ?? new Date().toISOString(),
-        ended_at: new Date().toISOString(),
-        meta: {
-          source: "voice",
+        user_id: authedUser.id,
+        title: `Durmah conversation ${fmtTime()}`,
+        content: joinedText,
+        started_at,
+        ended_at,
+        metadata: {
           status,
-          // add anything helpful here (model, latency, etc.)
+          partial_last: partialTranscript || null,
+          context: context || null,      // <- academic context travels with the note
         },
+        // Optional denormalized columns for easy filtering (also inside metadata)
+        context_route: context?.route ?? null,
+        context_term: context?.term ?? null,
+        context_module_id: context?.module_id ?? null,
+        context_module_code: context?.module_code ?? null,
+        context_year_label: context?.year_label ?? null,
+        context_week: context?.week ?? null,
+        context_tags: context?.tags ?? null,
       };
 
       const { data, error } = await supabase
@@ -118,6 +166,7 @@ export default function DurmahWidget() {
         .single();
 
       if (error) throw error;
+      setCloudId(data.id);
       setSaveMsg("Saved to cloud ✅");
     } catch (e: any) {
       setSaveMsg(`Save failed: ${e?.message || e}`);
@@ -126,13 +175,35 @@ export default function DurmahWidget() {
     }
   };
 
-  // --- Toggle voice ---
+  // --- Delete from Supabase if saved ---
+  const deleteFromCloud = async () => {
+    setSaveMsg(null);
+    if (!cloudId) {
+      deleteLocal();
+      return;
+    }
+    try {
+      const { error } = await supabase.from("voice_conversations").delete().eq("id", cloudId);
+      if (error) throw error;
+      setCloudId(null);
+      setSaveMsg("Deleted from cloud ✅");
+      deleteLocal();
+    } catch (e: any) {
+      setSaveMsg(`Delete failed: ${e?.message || e}`);
+    }
+  };
+
+  // --- Toggle Voice Session ---
   const toggleVoice = async () => {
+    setSaveMsg(null);
     if (!isConnected) {
       await connect().catch(() => {});
     }
-    if (voiceModeActive) {
+    if (status === "connecting") return;
+
+    if (isSpeaking || isListening) {
       stopVoiceMode();
+      // Keep transcript visible for actions
     } else {
       setShowActions(false);
       sessionStartRef.current = new Date().toISOString();
@@ -140,178 +211,104 @@ export default function DurmahWidget() {
     }
   };
 
-  const bubbleStatus = React.useMemo(() => {
-    if (!isConnected) return "Offline";
-    if (isSpeaking) return "Speaking";
-    if (isListening) return "Listening";
-    return "Connected";
-  }, [isConnected, isListening, isSpeaking]);
+  const bubbleStatus = !isConnected
+    ? "Offline"
+    : isSpeaking
+    ? "Speaking"
+    : isListening
+    ? "Listening"
+    : "Connected";
 
   return (
     <>
       {/* Floating Mic Button */}
       <button
         onClick={toggleVoice}
-        title={voiceModeActive ? "End voice chat" : "Start voice chat"}
+        title={isListening || isSpeaking ? "End voice chat" : "Start voice chat"}
         className={`fixed right-6 bottom-6 z-50 rounded-full w-14 h-14 shadow-xl transition
-          ${voiceModeActive ? "bg-red-500 hover:bg-red-600" : "bg-indigo-600 hover:bg-indigo-700"}
-          text-white flex items-center justify-center`}
-        aria-label="Toggle voice"
+          ${isListening || isSpeaking ? "bg-red-500 hover:bg-red-600" : "bg-indigo-600 hover:bg-indigo-700"}`}
       >
-        <svg viewBox="0 0 24 24" className="w-7 h-7">
-          <path
-            fill="currentColor"
-            d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V21h2v-3.07A7 7 0 0 0 19 11h-2Z"
-          />
+        <span className="sr-only">Toggle voice</span>
+        <svg viewBox="0 0 24 24" className="w-8 h-8 m-auto fill-white">
+          <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"></path>
+          <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-3.08A7 7 0 0 0 19 11z"></path>
         </svg>
       </button>
 
-      {/* Live mini transcript box */}
-      <div className="fixed left-6 bottom-6 z-40 w-[320px] max-w-[90vw]">
-        <div className="rounded-xl bg-white/95 backdrop-blur shadow-lg border border-gray-200 overflow-hidden">
-          <div className="px-4 py-2 text-white bg-purple-600 text-sm font-semibold">
-            Conversation Transcript
-          </div>
-
-          <div className="max-h-40 overflow-y-auto px-3 py-2 text-[13px] space-y-2">
-            {Array.isArray(transcript) && transcript.length > 0 ? (
-              (transcript as Line[]).map((line, idx) => (
-                <div
-                  key={line?.id ?? idx}
-                  className="bg-gray-100 rounded-md px-2 py-1 text-gray-800"
-                >
-                  {String(line?.text ?? "")}
-                </div>
-              ))
-            ) : (
-              <div className="italic text-gray-400">No conversation yet...</div>
-            )}
-
-            {!!partialTranscript && (
-              <div className="bg-yellow-100 rounded-md px-2 py-1 text-gray-800">
-                {partialTranscript}
+      {/* Bottom Sheet with Transcript + Actions */}
+      {(isListening || isSpeaking || localTranscript.length > 0) && (
+        <div className="fixed left-4 right-4 bottom-24 md:left-8 md:right-8 md:bottom-8 z-40">
+          <div className="max-h-[60vh] overflow-hidden rounded-2xl bg-white/90 backdrop-blur shadow-2xl border">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <div className="text-sm text-gray-600">
+                {bubbleStatus} {lastError ? `• ${String(lastError)}` : ""}
               </div>
-            )}
-          </div>
-
-          <div className="px-3 py-2 text-[12px] text-gray-500 flex items-center gap-2 border-t">
-            <span className="inline-flex items-center gap-1">
-              <span
-                className={`inline-block w-2 h-2 rounded-full ${
-                  isSpeaking
-                    ? "bg-fuchsia-500"
-                    : isListening
-                    ? "bg-emerald-500"
-                    : isConnected
-                    ? "bg-sky-500"
-                    : "bg-gray-300"
-                }`}
-              />
-              {bubbleStatus}
-            </span>
-            {lastError && (
-              <span className="text-red-500 truncate" title={lastError}>
-                • {lastError}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* After-chat actions tray */}
-      {showActions && (
-        <div className="fixed left-6 bottom-28 z-40 w-[360px] max-w-[92vw]">
-          <div className="rounded-xl bg-white/95 backdrop-blur shadow-xl border border-gray-200">
-            <div className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600">
-              Conversation finished
+              <button
+                onClick={() => setShowActions((v) => !v)}
+                className="text-indigo-600 text-sm font-medium hover:underline"
+              >
+                {showActions ? "Hide actions" : "Actions"}
+              </button>
             </div>
 
-            <div className="px-4 py-3 text-[13px] text-gray-700">
-              <div className="mb-2">
-                Save or manage the transcript of your last conversation.
-              </div>
+            {/* Transcript */}
+            <div className="p-4 h-[36vh] overflow-y-auto text-sm leading-6 text-gray-800">
+              {localTranscript.length === 0 ? (
+                <div className="text-gray-500">No transcript yet.</div>
+              ) : (
+                localTranscript.map((l) => (
+                  <div key={l.id} className="mb-2">
+                    {l.text}
+                  </div>
+                ))
+              )}
+              {partialTranscript && (
+                <div className="italic text-gray-500">{partialTranscript}</div>
+              )}
+            </div>
 
-              <div className="max-h-48 overflow-y-auto border rounded-md p-2 bg-gray-50">
-                <pre className="whitespace-pre-wrap text-[12px] leading-snug">
-                  {joinedText || "(empty)"}
-                </pre>
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2 items-center">
+            {/* Actions */}
+            {showActions && (
+              <div className="px-4 py-3 border-t flex flex-wrap gap-2 items-center">
                 <button
-                  onClick={handleSaveTxt}
-                  className="px-3 py-1.5 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
+                  onClick={saveTxtFile}
+                  className="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center gap-2"
                 >
-                  Save .txt
-                </button>
-                <button
-                  onClick={handleCopy}
-                  className="px-3 py-1.5 text-sm rounded-md bg-slate-700 text-white hover:bg-slate-800"
-                >
-                  Copy
-                </button>
-                <button
-                  onClick={handleDeleteLocal}
-                  className="px-3 py-1.5 text-sm rounded-md bg-rose-500 text-white hover:bg-rose-600"
-                >
-                  Delete
+                  <FileText className="w-4 h-4" /> Save .txt
                 </button>
 
                 <button
-                  onClick={handleSaveCloud}
+                  onClick={copyToClipboard}
+                  className="px-3 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center gap-2"
+                >
+                  <Copy className="w-4 h-4" /> Copy
+                </button>
+
+                <button
+                  onClick={deleteFromCloud}
+                  className="px-3 py-2 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 flex items-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" /> Delete{cloudId ? " (cloud)" : ""}
+                </button>
+
+                <button
                   disabled={saving}
-                  className={`px-3 py-1.5 text-sm rounded-md ${
-                    saving
-                      ? "bg-emerald-300 text-white"
-                      : "bg-emerald-500 text-white hover:bg-emerald-600"
+                  onClick={saveToCloud}
+                  className={`px-3 py-2 rounded-lg text-white flex items-center gap-2 ${
+                    saving ? "bg-indigo-400" : "bg-indigo-600 hover:bg-indigo-700"
                   }`}
                 >
-                  {saving ? "Saving…" : "Save to cloud"}
+                  <Save className="w-4 h-4" />
+                  {saving ? "Saving..." : "Save to cloud"}
                 </button>
 
-                {saveMsg && (
-                  <span
-                    className={`text-sm ${
-                      saveMsg.startsWith("Saved")
-                        ? "text-emerald-600"
-                        : "text-gray-600"
-                    }`}
-                  >
-                    {saveMsg}
-                  </span>
-                )}
+                {saveMsg && <div className="ml-2 text-sm text-gray-600">{saveMsg}</div>}
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}
-
-      {/* Optional manual text -> voiced reply */}
-      <div className="fixed left-6 bottom-48 z-30 w-[320px] max-w-[90vw]">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const fd = new FormData(e.currentTarget);
-            const text = String(fd.get("t") || "").trim();
-            if (text) sendMessage(text);
-            e.currentTarget.reset();
-          }}
-          className="flex gap-2"
-        >
-          <input
-            name="t"
-            type="text"
-            placeholder="Type to send text…"
-            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
-          <button
-            type="submit"
-            className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm hover:bg-indigo-700"
-          >
-            Send
-          </button>
-        </form>
-      </div>
     </>
   );
 }
